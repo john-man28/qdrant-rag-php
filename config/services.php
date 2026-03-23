@@ -47,6 +47,18 @@ return [
         'url' => env('QDRANT_URL', 'http://localhost:6333'),
         'collection' => env('QDRANT_COLLECTION', 'catalog'),
         'timeout' => (int) env('QDRANT_TIMEOUT', 60),
+        'vector_size' => (int) env('QDRANT_VECTOR_SIZE', 1024),
+    ],
+
+    'bigcommerce' => [
+        'api_token' => env('BC_API_TOKEN_PROD'),
+        'store_hash' => env('BC_STORE_HASH_PROD'),
+    ],
+
+    'catalog_reload' => [
+        'lines_per_chunk_file' => (int) env('CATALOG_RELOAD_LINES_PER_CHUNK', 256),
+        'embed_batch_size' => (int) env('CATALOG_EMBED_BATCH_SIZE', 64),
+        'qdrant_upload_batch_size' => (int) env('CATALOG_QDRANT_UPLOAD_BATCH_SIZE', 64),
     ],
 
     'catalog_agent' => [

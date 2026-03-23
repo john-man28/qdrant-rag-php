@@ -37,6 +37,8 @@ class CatalogAgentTest extends TestCase
                 ->component('CatalogAgentApp')
                 ->where('chatEndpoint', route('catalog-agent.message'))
                 ->where('resetEndpoint', route('catalog-agent.reset'))
+                ->where('reloadStartEndpoint', route('catalog-agent.reload.start'))
+                ->where('reloadStatusEndpoint', route('catalog-agent.reload.status'))
                 ->where('conversation', [])
                 ->where('lastResults', [])
                 ->where('examples', [

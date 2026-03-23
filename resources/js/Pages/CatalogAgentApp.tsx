@@ -1,6 +1,7 @@
 import { startTransition, useDeferredValue, useEffect, useId, useRef, useState } from 'react';
 import type {
     CatalogAgentPageProps,
+    CatalogReloadStatusPayload,
     CatalogResult,
     ChatResponsePayload,
     ConversationMessage,
@@ -12,6 +13,8 @@ export default function CatalogAgentApp({
     runtimeError: initialRuntimeError,
     chatEndpoint,
     resetEndpoint,
+    reloadStartEndpoint,
+    reloadStatusEndpoint,
     examples,
 }: CatalogAgentPageProps) {
     const [conversation, setConversation] = useState<ConversationMessage[]>(initialConversation);
@@ -20,10 +23,21 @@ export default function CatalogAgentApp({
     const [draft, setDraft] = useState('');
     const [isSending, setIsSending] = useState(false);
     const [localError, setLocalError] = useState<string | null>(null);
+    const [reloadBusy, setReloadBusy] = useState(false);
+    const [reloadHint, setReloadHint] = useState<string | null>(null);
+    const reloadPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const deferredResults = useDeferredValue(lastResults);
     const bottomRef = useRef<HTMLDivElement | null>(null);
 
     const axios = window.axios;
+
+    useEffect(() => {
+        return () => {
+            if (reloadPollRef.current !== null) {
+                clearInterval(reloadPollRef.current);
+            }
+        };
+    }, []);
     useEffect(() => {
         bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
     }, [conversation]);
@@ -63,6 +77,66 @@ export default function CatalogAgentApp({
         }
     }
 
+    async function startCatalogReload(): Promise<void> {
+        if (reloadBusy || runtimeError !== null) {
+            return;
+        }
+        setReloadBusy(true);
+        setReloadHint(null);
+        if (reloadPollRef.current !== null) {
+            clearInterval(reloadPollRef.current);
+            reloadPollRef.current = null;
+        }
+        try {
+            const start = await axios.post<{ run_id: string }>(reloadStartEndpoint, {});
+            const runId = start.data.run_id;
+            setReloadHint('Queued: preparing catalog export and vector index…');
+
+            const pollOnce = async (): Promise<void> => {
+                try {
+                    const res = await axios.get<CatalogReloadStatusPayload>(reloadStatusEndpoint, {
+                        params: { run_id: runId },
+                    });
+                    const phase = (res.data.run?.phase as string | undefined) ?? null;
+                    const err = (res.data.run?.error as string | undefined) ?? null;
+                    const batch = res.data.batch;
+                    let line = phase ?? '…';
+                    if (batch && batch.total_jobs > 0) {
+                        line = `${line} · ${Math.round(batch.progress)}% (${batch.total_jobs - batch.pending_jobs}/${batch.total_jobs} chunks)`;
+                    }
+                    setReloadHint(line);
+                    if (phase === 'completed' || phase === 'failed') {
+                        if (reloadPollRef.current !== null) {
+                            clearInterval(reloadPollRef.current);
+                            reloadPollRef.current = null;
+                        }
+                        setReloadBusy(false);
+                        setReloadHint(
+                            phase === 'completed'
+                                ? 'Catalog reload finished. Qdrant is up to date.'
+                                : `Reload failed: ${err ?? 'unknown error'}`,
+                        );
+                    }
+                } catch {
+                    if (reloadPollRef.current !== null) {
+                        clearInterval(reloadPollRef.current);
+                        reloadPollRef.current = null;
+                    }
+                    setReloadBusy(false);
+                    setReloadHint('Could not read reload status.');
+                }
+            };
+
+            void pollOnce();
+            reloadPollRef.current = setInterval(() => {
+                void pollOnce();
+            }, 2000);
+        } catch {
+            setReloadBusy(false);
+            setReloadHint('Could not start catalog reload.');
+        }
+    }
+
     async function resetConversation(): Promise<void> {
         setIsSending(true);
         setLocalError(null);
@@ -96,15 +170,29 @@ export default function CatalogAgentApp({
                     <section className="overflow-hidden rounded-[2rem] border border-stone-900/10 bg-[linear-gradient(160deg,rgba(255,255,255,0.82),rgba(247,243,236,0.7))] shadow-[0_28px_120px_rgba(68,64,60,0.14)] backdrop-blur">
                         <div className="border-b border-stone-900/8 px-6 py-2 sm:px-7">
                             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                                <button
-                                    type="button"
-                                    onClick={() => void resetConversation()}
-                                    disabled={isSending}
-                                    className="inline-flex items-center justify-center gap-2 rounded-full border border-stone-900/12 bg-white/90 px-4 py-2 text-sm font-medium text-stone-700 transition hover:border-stone-900/20 hover:text-stone-950 disabled:cursor-not-allowed disabled:opacity-60"
-                                >
-                                    <ResetIcon spinning={isSending} />
-                                    New session
-                                </button>
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => void resetConversation()}
+                                        disabled={isSending}
+                                        className="inline-flex items-center justify-center gap-2 rounded-full border border-stone-900/12 bg-white/90 px-4 py-2 text-sm font-medium text-stone-700 transition hover:border-stone-900/20 hover:text-stone-950 disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                        <ResetIcon spinning={isSending} />
+                                        New session
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => void startCatalogReload()}
+                                        disabled={reloadBusy || runtimeError !== null}
+                                        className="inline-flex items-center justify-center gap-2 rounded-full border border-amber-900/25 bg-amber-100/90 px-4 py-2 text-sm font-medium text-amber-950 transition hover:border-amber-900/35 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                        {reloadBusy ? <LoaderIcon /> : <SignalIcon />}
+                                        Reload catalog
+                                    </button>
+                                </div>
+                                {reloadHint !== null && (
+                                    <p className="max-w-xl text-xs leading-6 text-stone-600">{reloadHint}</p>
+                                )}
                             </div>
                         </div>
 

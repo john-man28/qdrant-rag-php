@@ -20,7 +20,27 @@ export type CatalogAgentPageProps = {
     runtimeError: string | null;
     chatEndpoint: string;
     resetEndpoint: string;
+    reloadStartEndpoint: string;
+    reloadStatusEndpoint: string;
     examples: string[];
+};
+
+export type CatalogReloadBatchPayload = {
+    id: string;
+    name: string;
+    total_jobs: number;
+    pending_jobs: number;
+    failed_jobs: number;
+    progress: number;
+    finished: boolean;
+    cancelled: boolean;
+    failed: boolean;
+};
+
+export type CatalogReloadStatusPayload = {
+    ok: boolean;
+    run: Record<string, unknown> | null;
+    batch: CatalogReloadBatchPayload | null;
 };
 
 export type ChatResponsePayload = {
