@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Catalog\CatalogReloadCoordinator;
 use App\Jobs\BeginCatalogReloadJob;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class CatalogReloadTest extends TestCase
@@ -51,5 +53,25 @@ class CatalogReloadTest extends TestCase
     public function test_reload_status_requires_run_id(): void
     {
         $this->getJson(route('catalog-agent.reload.status'))->assertStatus(422);
+    }
+
+    public function test_reload_status_returns_enriched_labels(): void
+    {
+        $runId = Str::uuid()->toString();
+        $coordinator = app(CatalogReloadCoordinator::class);
+        Cache::put($coordinator->statusKey($runId), [
+            'phase' => 'export',
+            'export_step' => 'products',
+            'export_page' => 1,
+            'export_total_pages' => 4,
+            'export_progress' => 25,
+        ], 3600);
+
+        $response = $this->getJson(route('catalog-agent.reload.status', ['run_id' => $runId]));
+
+        $response->assertOk()
+            ->assertJsonPath('run.phase', 'export')
+            ->assertJsonPath('run.phase_label', 'Fetching products from BigCommerce')
+            ->assertJsonPath('run.export_detail', 'Product pages 1 / 4 (25%)');
     }
 }

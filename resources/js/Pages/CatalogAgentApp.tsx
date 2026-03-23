@@ -7,6 +7,114 @@ import type {
     ConversationMessage,
 } from '../types/catalog-agent';
 
+const RELOAD_RUN_STORAGE_KEY = 'catalog_reload_run_id';
+
+type ReloadProgressView = {
+    phaseLabel: string;
+    exportDetail: string | null;
+    statsLine: string | null;
+    batchProgress: number | null;
+    batchLine: string | null;
+    warning: string | null;
+    barMode: 'none' | 'determinate' | 'indeterminate';
+    barPercent: number | null;
+};
+
+function deriveReloadProgress(data: CatalogReloadStatusPayload): ReloadProgressView {
+    const run = data.run;
+    if (!run) {
+        return {
+            phaseLabel: 'Queued',
+            exportDetail: null,
+            statsLine: null,
+            batchProgress: null,
+            batchLine: null,
+            warning: null,
+            barMode: 'indeterminate',
+            barPercent: null,
+        };
+    }
+
+    const phase = typeof run.phase === 'string' ? run.phase : '';
+    const phaseLabel =
+        typeof run.phase_label === 'string' && run.phase_label !== '' ? run.phase_label : phase || '…';
+    const exportDetail =
+        typeof run.export_detail === 'string' && run.export_detail !== '' ? run.export_detail : null;
+
+    const productCount = typeof run.product_count === 'number' ? run.product_count : undefined;
+    const variantCount = typeof run.variant_count === 'number' ? run.variant_count : undefined;
+    const chunkCount = typeof run.chunk_count === 'number' ? run.chunk_count : undefined;
+
+    let statsLine: string | null = null;
+    if (phase === 'indexing' && (productCount != null || chunkCount != null)) {
+        const parts: string[] = [];
+        if (productCount != null) {
+            parts.push(`${productCount} products`);
+        }
+        if (variantCount != null) {
+            parts.push(`${variantCount} variants`);
+        }
+        if (chunkCount != null) {
+            parts.push(`${chunkCount} chunks to index`);
+        }
+        if (parts.length > 0) {
+            statsLine = parts.join(' · ');
+        }
+    }
+
+    const batch = data.batch;
+    let batchProgress: number | null = null;
+    let batchLine: string | null = null;
+    if (batch && batch.total_jobs > 0) {
+        batchProgress = Math.round(batch.progress);
+        batchLine = `${batch.total_jobs - batch.pending_jobs} / ${batch.total_jobs} chunks`;
+    }
+
+    const exportProgress =
+        typeof run.export_progress === 'number' && !Number.isNaN(run.export_progress)
+            ? run.export_progress
+            : null;
+
+    let barMode: ReloadProgressView['barMode'] = 'none';
+    let barPercent: number | null = null;
+
+    if (batch && batch.total_jobs > 0) {
+        barMode = 'determinate';
+        barPercent = batchProgress;
+    } else if (phase === 'export' && exportProgress !== null && exportProgress >= 0) {
+        barMode = 'determinate';
+        barPercent = exportProgress;
+    } else if (phase === 'export' || phase === 'reset_qdrant') {
+        barMode = 'indeterminate';
+        barPercent = null;
+    }
+
+    const lastChunkErr =
+        typeof run.last_chunk_error === 'string' && run.last_chunk_error !== ''
+            ? run.last_chunk_error
+            : null;
+    const failedJobs = batch?.failed_jobs ?? 0;
+    const warnings: string[] = [];
+    if (failedJobs > 0) {
+        warnings.push(`${failedJobs} batch job(s) failed`);
+    }
+    if (lastChunkErr) {
+        warnings.push(lastChunkErr);
+    }
+    const warning = warnings.length > 0 ? warnings.join(' · ') : null;
+
+    return {
+        phaseLabel,
+        exportDetail,
+        statsLine,
+        batchProgress,
+        batchLine,
+        warning,
+        barMode,
+        barPercent,
+    };
+}
+
 export default function CatalogAgentApp({
     conversation: initialConversation,
     lastResults: initialLastResults,
@@ -25,11 +133,61 @@ export default function CatalogAgentApp({
     const [localError, setLocalError] = useState<string | null>(null);
     const [reloadBusy, setReloadBusy] = useState(false);
     const [reloadHint, setReloadHint] = useState<string | null>(null);
+    const [reloadProgress, setReloadProgress] = useState<ReloadProgressView | null>(null);
     const reloadPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const deferredResults = useDeferredValue(lastResults);
     const bottomRef = useRef<HTMLDivElement | null>(null);
 
     const axios = window.axios;
+
+    function setupReloadPolling(runId: string, options?: { skipInitialPoll?: boolean }): void {
+        sessionStorage.setItem(RELOAD_RUN_STORAGE_KEY, runId);
+        if (reloadPollRef.current !== null) {
+            clearInterval(reloadPollRef.current);
+            reloadPollRef.current = null;
+        }
+
+        const pollOnce = async (): Promise<void> => {
+            try {
+                const res = await axios.get<CatalogReloadStatusPayload>(reloadStatusEndpoint, {
+                    params: { run_id: runId },
+                });
+                const phase = res.data.run?.phase as string | undefined;
+                const err = (res.data.run?.error as string | undefined) ?? null;
+                setReloadProgress(deriveReloadProgress(res.data));
+                if (phase === 'completed' || phase === 'failed') {
+                    if (reloadPollRef.current !== null) {
+                        clearInterval(reloadPollRef.current);
+                        reloadPollRef.current = null;
+                    }
+                    setReloadBusy(false);
+                    setReloadProgress(null);
+                    sessionStorage.removeItem(RELOAD_RUN_STORAGE_KEY);
+                    setReloadHint(
+                        phase === 'completed'
+                            ? 'Catalog reload finished. Qdrant is up to date.'
+                            : `Reload failed: ${err ?? 'unknown error'}`,
+                    );
+                }
+            } catch {
+                if (reloadPollRef.current !== null) {
+                    clearInterval(reloadPollRef.current);
+                    reloadPollRef.current = null;
+                }
+                setReloadBusy(false);
+                setReloadProgress(null);
+                sessionStorage.removeItem(RELOAD_RUN_STORAGE_KEY);
+                setReloadHint('Could not read reload status.');
+            }
+        };
+
+        if (!options?.skipInitialPoll) {
+            void pollOnce();
+        }
+        reloadPollRef.current = setInterval(() => {
+            void pollOnce();
+        }, 5000);
+    }
 
     useEffect(() => {
         return () => {
@@ -37,6 +195,42 @@ export default function CatalogAgentApp({
                 clearInterval(reloadPollRef.current);
             }
         };
+    }, []);
+
+    useEffect(() => {
+        const stored = sessionStorage.getItem(RELOAD_RUN_STORAGE_KEY);
+        if (!stored) {
+            return;
+        }
+        let cancelled = false;
+        void (async () => {
+            try {
+                const res = await axios.get<CatalogReloadStatusPayload>(reloadStatusEndpoint, {
+                    params: { run_id: stored },
+                });
+                if (cancelled) {
+                    return;
+                }
+                const phase = res.data.run?.phase as string | undefined;
+                if (!res.data.run || phase === 'completed' || phase === 'failed') {
+                    sessionStorage.removeItem(RELOAD_RUN_STORAGE_KEY);
+                    return;
+                }
+                setReloadBusy(true);
+                setReloadProgress(deriveReloadProgress(res.data));
+                setupReloadPolling(stored, { skipInitialPoll: true });
+            } catch {
+                sessionStorage.removeItem(RELOAD_RUN_STORAGE_KEY);
+            }
+        })();
+        return () => {
+            cancelled = true;
+            if (reloadPollRef.current !== null) {
+                clearInterval(reloadPollRef.current);
+                reloadPollRef.current = null;
+            }
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- resume in-flight reload once on mount
     }, []);
     useEffect(() => {
         bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -83,6 +277,13 @@ export default function CatalogAgentApp({
         }
         setReloadBusy(true);
         setReloadHint(null);
+        setReloadProgress(
+            deriveReloadProgress({
+                ok: true,
+                run: null,
+                batch: null,
+            }),
+        );
         if (reloadPollRef.current !== null) {
             clearInterval(reloadPollRef.current);
             reloadPollRef.current = null;
@@ -90,49 +291,11 @@ export default function CatalogAgentApp({
         try {
             const start = await axios.post<{ run_id: string }>(reloadStartEndpoint, {});
             const runId = start.data.run_id;
-            setReloadHint('Queued: preparing catalog export and vector index…');
-
-            const pollOnce = async (): Promise<void> => {
-                try {
-                    const res = await axios.get<CatalogReloadStatusPayload>(reloadStatusEndpoint, {
-                        params: { run_id: runId },
-                    });
-                    const phase = (res.data.run?.phase as string | undefined) ?? null;
-                    const err = (res.data.run?.error as string | undefined) ?? null;
-                    const batch = res.data.batch;
-                    let line = phase ?? '…';
-                    if (batch && batch.total_jobs > 0) {
-                        line = `${line} · ${Math.round(batch.progress)}% (${batch.total_jobs - batch.pending_jobs}/${batch.total_jobs} chunks)`;
-                    }
-                    setReloadHint(line);
-                    if (phase === 'completed' || phase === 'failed') {
-                        if (reloadPollRef.current !== null) {
-                            clearInterval(reloadPollRef.current);
-                            reloadPollRef.current = null;
-                        }
-                        setReloadBusy(false);
-                        setReloadHint(
-                            phase === 'completed'
-                                ? 'Catalog reload finished. Qdrant is up to date.'
-                                : `Reload failed: ${err ?? 'unknown error'}`,
-                        );
-                    }
-                } catch {
-                    if (reloadPollRef.current !== null) {
-                        clearInterval(reloadPollRef.current);
-                        reloadPollRef.current = null;
-                    }
-                    setReloadBusy(false);
-                    setReloadHint('Could not read reload status.');
-                }
-            };
-
-            void pollOnce();
-            reloadPollRef.current = setInterval(() => {
-                void pollOnce();
-            }, 2000);
+            setupReloadPolling(runId);
         } catch {
             setReloadBusy(false);
+            setReloadProgress(null);
+            sessionStorage.removeItem(RELOAD_RUN_STORAGE_KEY);
             setReloadHint('Could not start catalog reload.');
         }
     }
@@ -190,7 +353,50 @@ export default function CatalogAgentApp({
                                         Reload catalog
                                     </button>
                                 </div>
-                                {reloadHint !== null && (
+                                {reloadBusy && reloadProgress !== null && (
+                                    <div className="max-w-xl space-y-2">
+                                        <p className="text-xs font-medium leading-6 text-stone-800">
+                                            {reloadProgress.phaseLabel}
+                                        </p>
+                                        {reloadProgress.exportDetail !== null && (
+                                            <p className="text-xs leading-6 text-stone-600">
+                                                {reloadProgress.exportDetail}
+                                            </p>
+                                        )}
+                                        {reloadProgress.statsLine !== null && (
+                                            <p className="text-xs leading-6 text-stone-600">
+                                                {reloadProgress.statsLine}
+                                            </p>
+                                        )}
+                                        {reloadProgress.warning !== null && (
+                                            <p className="text-xs leading-6 text-amber-900">{reloadProgress.warning}</p>
+                                        )}
+                                        {reloadProgress.barMode !== 'none' && (
+                                            <div className="h-1.5 w-full overflow-hidden rounded-full bg-stone-200/90">
+                                                {reloadProgress.barMode === 'determinate' &&
+                                                reloadProgress.barPercent !== null ? (
+                                                    <div
+                                                        className="h-full rounded-full bg-amber-500 transition-[width] duration-300"
+                                                        style={{
+                                                            width: `${Math.min(100, Math.max(0, reloadProgress.barPercent))}%`,
+                                                        }}
+                                                    />
+                                                ) : (
+                                                    <div className="h-full w-full animate-pulse rounded-full bg-amber-300/80" />
+                                                )}
+                                            </div>
+                                        )}
+                                        {reloadProgress.batchLine !== null && (
+                                            <p className="text-xs leading-6 text-stone-500">
+                                                {reloadProgress.batchLine}
+                                                {reloadProgress.batchProgress !== null
+                                                    ? ` · ${reloadProgress.batchProgress}%`
+                                                    : ''}
+                                            </p>
+                                        )}
+                                    </div>
+                                )}
+                                {!reloadBusy && reloadHint !== null && (
                                     <p className="max-w-xl text-xs leading-6 text-stone-600">{reloadHint}</p>
                                 )}
                             </div>

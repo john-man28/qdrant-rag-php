@@ -37,9 +37,26 @@ export type CatalogReloadBatchPayload = {
     failed: boolean;
 };
 
+/** Fields merged from cache + server-side enrichReloadRunStatus */
+export type CatalogReloadRunPayload = {
+    phase?: string;
+    phase_label?: string;
+    export_detail?: string;
+    export_step?: string;
+    export_page?: number;
+    export_total_pages?: number;
+    export_progress?: number;
+    product_count?: number;
+    variant_count?: number;
+    chunk_count?: number;
+    last_chunk_error?: string;
+    error?: string;
+    split_chunks_written?: number;
+};
+
 export type CatalogReloadStatusPayload = {
     ok: boolean;
-    run: Record<string, unknown> | null;
+    run: CatalogReloadRunPayload | null;
     batch: CatalogReloadBatchPayload | null;
 };
 

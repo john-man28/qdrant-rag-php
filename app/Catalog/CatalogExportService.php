@@ -16,12 +16,16 @@ final class CatalogExportService
     /**
      * Export catalog NDJSON into $runDirectory (must exist).
      * Splits products.jsonl into chunk files under chunks/.
+     *
+     * @param  (callable(array<string, mixed>): void)|null  $onProgress
      */
-    public function exportToRunDirectory(string $runDirectory): CatalogExportResult
+    public function exportToRunDirectory(string $runDirectory, ?callable $onProgress = null): CatalogExportResult
     {
         if (! is_dir($runDirectory)) {
             throw new RuntimeException("Run directory does not exist: {$runDirectory}");
         }
+
+        $this->emitExportProgress($onProgress, ['export_step' => 'categories']);
 
         $baseUrl = $this->client->baseUrl();
         $categoriesFile = $runDirectory.'/categories.jsonl';
@@ -33,9 +37,13 @@ final class CatalogExportService
         $this->writeJsonLines($categoriesFile, $categories);
         $categoryLookup = $this->buildCategoryPathLookup($categories);
 
+        $this->emitExportProgress($onProgress, ['export_step' => 'brands']);
+
         $brands = $this->fetchAllBrands($baseUrl);
         $this->writeJsonLines($brandsFile, $brands);
         $brandLookup = $this->buildBrandLookup($brands);
+
+        $this->emitExportProgress($onProgress, ['export_step' => 'products']);
 
         $productsFp = fopen($productsFile, 'w');
         if ($productsFp === false) {
@@ -52,7 +60,8 @@ final class CatalogExportService
             $productsFp,
             $variantsFp,
             $categoryLookup,
-            $brandLookup
+            $brandLookup,
+            $onProgress
         );
         fclose($productsFp);
         fclose($variantsFp);
@@ -61,7 +70,7 @@ final class CatalogExportService
         File::ensureDirectoryExists($chunksDir);
 
         $linesPerChunk = max(1, (int) config('services.catalog_reload.lines_per_chunk_file', 256));
-        $chunkRelativePaths = $this->splitJsonlIntoChunkFiles($productsFile, $chunksDir, $linesPerChunk);
+        $chunkRelativePaths = $this->splitJsonlIntoChunkFiles($productsFile, $chunksDir, $linesPerChunk, $onProgress);
 
         return new CatalogExportResult(
             productCount: $productCount,
@@ -89,20 +98,28 @@ final class CatalogExportService
     }
 
     /**
+     * @param  (callable(array<string, mixed>): void)|null  $onProgress
      * @return list<string> Relative paths from run directory (e.g. chunks/chunk-00001.jsonl)
      */
-    public function splitJsonlIntoChunkFiles(string $productsJsonlPath, string $chunksDir, int $linesPerChunk): array
-    {
+    public function splitJsonlIntoChunkFiles(
+        string $productsJsonlPath,
+        string $chunksDir,
+        int $linesPerChunk,
+        ?callable $onProgress = null,
+    ): array {
+        $this->emitExportProgress($onProgress, ['export_step' => 'splitting_chunks']);
+
         $relative = [];
         $chunkIndex = 1;
         $lineBuffer = '';
         $count = 0;
+        $flushCount = 0;
         $in = fopen($productsJsonlPath, 'r');
         if ($in === false) {
             throw new RuntimeException("Cannot read {$productsJsonlPath}");
         }
 
-        $flush = function () use (&$lineBuffer, &$chunkIndex, $chunksDir, &$relative, &$count): void {
+        $flush = function () use (&$lineBuffer, &$chunkIndex, $chunksDir, &$relative, &$count, &$flushCount, $onProgress): void {
             if ($lineBuffer === '') {
                 return;
             }
@@ -113,6 +130,12 @@ final class CatalogExportService
             $chunkIndex++;
             $lineBuffer = '';
             $count = 0;
+            $flushCount++;
+            if ($onProgress !== null && ($flushCount % 10 === 0)) {
+                $onProgress([
+                    'split_chunks_written' => $flushCount,
+                ]);
+            }
         };
 
         while (($line = fgets($in)) !== false) {
@@ -135,7 +158,23 @@ final class CatalogExportService
             $relative[] = 'chunks/chunk-00001.jsonl';
         }
 
+        if ($onProgress !== null && $flushCount > 0 && ($flushCount % 10 !== 0)) {
+            $onProgress([
+                'split_chunks_written' => $flushCount,
+            ]);
+        }
+
         return $relative;
+    }
+
+    /**
+     * @param  (callable(array<string, mixed>): void)|null  $onProgress
+     */
+    private function emitExportProgress(?callable $onProgress, array $fields): void
+    {
+        if ($onProgress !== null) {
+            $onProgress($fields);
+        }
     }
 
     /**
@@ -257,6 +296,7 @@ final class CatalogExportService
      * @param  resource  $variantsFp
      * @param  array<int, string>  $categoryLookup
      * @param  array<int, string>  $brandLookup
+     * @param  (callable(array<string, mixed>): void)|null  $onProgress
      * @return array{0: int, 1: int}
      */
     public function fetchAndWriteProducts(
@@ -264,7 +304,8 @@ final class CatalogExportService
         $productsFp,
         $variantsFp,
         array $categoryLookup = [],
-        array $brandLookup = []
+        array $brandLookup = [],
+        ?callable $onProgress = null,
     ): array {
         $limit = 250;
         $url = "{$baseUrl}/products?include=images,variants&limit={$limit}&page=1";
@@ -319,7 +360,21 @@ final class CatalogExportService
 
         $writeProducts($data['data'] ?? []);
         $total = $data['meta']['pagination']['total'] ?? 0;
-        $totalPages = (int) ceil($total / $limit);
+        $totalPages = max(1, (int) ceil($total / $limit));
+
+        $emitProductPage = function (int $completedPage) use ($onProgress, $totalPages): void {
+            if ($onProgress === null) {
+                return;
+            }
+            $completedPage = min($completedPage, $totalPages);
+            $onProgress([
+                'export_page' => $completedPage,
+                'export_total_pages' => $totalPages,
+                'export_progress' => (int) round(100 * $completedPage / $totalPages),
+            ]);
+        };
+
+        $emitProductPage(1);
 
         if ($totalPages <= 1) {
             return [$productCount, $variantCount];
@@ -330,6 +385,7 @@ final class CatalogExportService
             $urls[] = "{$baseUrl}/products?include=images,variants&limit={$limit}&page={$page}";
         }
 
+        $processedPages = 1;
         foreach (array_chunk($urls, $this->client->poolSize()) as $batch) {
             $results = $this->client->getBatch($batch);
             foreach ($results as $resp) {
@@ -338,6 +394,8 @@ final class CatalogExportService
                     $writeProducts($pageData['data']);
                 }
             }
+            $processedPages += count($batch);
+            $emitProductPage($processedPages);
             usleep($this->client->batchDelayMicroseconds());
         }
 

@@ -32,7 +32,10 @@ class ExportCatalogJob implements ShouldQueue
         $dir = $coordinator->runDirectory($this->runId);
 
         try {
-            $result = $export->exportToRunDirectory($dir);
+            $runId = $this->runId;
+            $result = $export->exportToRunDirectory($dir, function (array $fields) use ($coordinator, $runId): void {
+                $coordinator->putStatus($runId, $fields);
+            });
         } catch (Throwable $e) {
             $coordinator->putStatus($this->runId, [
                 'phase' => 'failed',
@@ -65,8 +68,6 @@ class ExportCatalogJob implements ShouldQueue
 
             return;
         }
-
-        $runId = $this->runId;
 
         $batch = Bus::batch($jobs)
             ->name('Catalog vector index '.$runId)

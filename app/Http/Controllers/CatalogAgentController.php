@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers;
 
 use App\Catalog\CatalogReloadCoordinator;
+use App\Catalog\CatalogReloadStatusPresenter;
 use App\CatalogAgent\AgentRuntimeException;
 use App\CatalogAgent\CatalogChatAgent;
 use App\Jobs\BeginCatalogReloadJob;
@@ -92,7 +93,7 @@ class CatalogAgentController extends Controller
         ]);
 
         $runId = $validated['run_id'];
-        $status = $coordinator->getStatus($runId);
+        $status = CatalogReloadStatusPresenter::enrich($coordinator->getStatus($runId));
 
         $batchPayload = null;
         if (is_array($status) && isset($status['batch_id']) && is_string($status['batch_id'])) {
