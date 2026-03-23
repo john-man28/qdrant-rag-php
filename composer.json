@@ -93,7 +93,7 @@
     "repositories": {
         "local-rag": {
             "type": "path",
-            "url": "..",
+            "url": "./qdrant-php",
             "options": {
                 "symlink": true
             }
