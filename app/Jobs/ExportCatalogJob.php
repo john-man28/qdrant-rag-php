@@ -50,6 +50,7 @@ class ExportCatalogJob implements ShouldQueue
             'phase' => 'indexing',
             'product_count' => $result->productCount,
             'variant_count' => $result->variantCount,
+            'embedding_chunk_count' => $result->embeddingChunkCount,
             'chunk_count' => count($result->chunkRelativePaths),
         ]);
 

@@ -10,6 +10,19 @@ use DOMXPath;
 
 final class ProductDescriptionNormalizer
 {
+    private const PRIMARY_CHUNK_KEY = 'main';
+
+    /**
+     * @var list<string>
+     */
+    private const SECTION_ORDER = [
+        'Introduction',
+        'Key Features and Benefits',
+        'Specifications',
+        'Common Uses',
+        'Other Details',
+    ];
+
     public static function normalizeProductDescriptionToText(
         ?string $html,
         ?string $productName = null,
@@ -18,8 +31,69 @@ final class ProductDescriptionNormalizer
         array|string|null $categories = null,
         array|string|null $priceLines = null
     ): string {
+        return self::buildProductTextArtifacts(
+            $html,
+            $productName,
+            $productSku,
+            $brand,
+            $categories,
+            $priceLines,
+        )['full_text'];
+    }
+
+    /**
+     * @return array{
+     *     full_text: string,
+     *     chunks: list<array{key:string,text:string,rank:int,is_primary:bool}>
+     * }
+     */
+    public static function buildProductTextArtifacts(
+        ?string $html,
+        ?string $productName = null,
+        ?string $productSku = null,
+        ?string $brand = null,
+        array|string|null $categories = null,
+        array|string|null $priceLines = null
+    ): array {
+        $header = self::buildMetadataHeader($productName, $productSku, $brand, $categories, $priceLines);
+        $sections = self::extractSections($html);
+
+        if ($sections === null || ! self::hasSectionContent($sections)) {
+            $fullText = self::fallbackPlainText(
+                (string) ($html ?? ''),
+                $productName,
+                $productSku,
+                $brand,
+                $categories,
+                $priceLines,
+            );
+
+            return [
+                'full_text' => $fullText,
+                'chunks' => [[
+                    'key' => self::PRIMARY_CHUNK_KEY,
+                    'text' => $fullText,
+                    'rank' => 1,
+                    'is_primary' => true,
+                ]],
+            ];
+        }
+
+        $fullText = self::buildFullTextFromSections($header, $sections);
+
+        return [
+            'full_text' => $fullText,
+            'chunks' => self::buildChunksFromSections($header, $sections, $fullText),
+        ];
+    }
+
+    /**
+     * @return array<string, list<string>>|null
+     */
+    private static function extractSections(?string $html): ?array
+    {
         if ($html === null || trim($html) === '') {
-            return self::buildMetadataHeader($productName, $productSku, $brand, $categories, $priceLines);
+            return null;
         }
 
         libxml_use_internal_errors(true);
@@ -36,7 +110,7 @@ final class ProductDescriptionNormalizer
         $root = $xpath->query('//*[@id="root"]')->item(0);
 
         if (! $root) {
-            return self::fallbackPlainText($html, $productName, $productSku, $brand, $categories, $priceLines);
+            return null;
         }
 
         self::removeNodesByClass($xpath, [
@@ -44,14 +118,7 @@ final class ProductDescriptionNormalizer
             'block_ResDown',
         ]);
 
-        $sections = [
-            'Introduction' => [],
-            'Key Features and Benefits' => [],
-            'Specifications' => [],
-            'Common Uses' => [],
-            'Other Details' => [],
-        ];
-
+        $sections = self::emptySections();
         $currentSection = 'Introduction';
 
         foreach ($root->childNodes as $node) {
@@ -62,46 +129,187 @@ final class ProductDescriptionNormalizer
             $sections[$sectionName] = self::cleanSectionItems($items);
         }
 
-        $hasContent = false;
+        return $sections;
+    }
+
+    /**
+     * @return array<string, list<string>>
+     */
+    private static function emptySections(): array
+    {
+        return [
+            'Introduction' => [],
+            'Key Features and Benefits' => [],
+            'Specifications' => [],
+            'Common Uses' => [],
+            'Other Details' => [],
+        ];
+    }
+
+    /**
+     * @param  array<string, list<string>>  $sections
+     */
+    private static function hasSectionContent(array $sections): bool
+    {
         foreach ($sections as $items) {
-            if (! empty($items)) {
-                $hasContent = true;
-                break;
+            if ($items !== []) {
+                return true;
             }
         }
 
-        if (! $hasContent) {
-            return self::fallbackPlainText($html, $productName, $productSku, $brand, $categories, $priceLines);
-        }
+        return false;
+    }
 
+    /**
+     * @param  array<string, list<string>>  $sections
+     */
+    private static function buildFullTextFromSections(string $header, array $sections): string
+    {
         $parts = [];
 
-        $header = self::buildMetadataHeader($productName, $productSku, $brand, $categories, $priceLines);
         if ($header !== '') {
             $parts[] = $header;
         }
 
-        if (! empty($sections['Introduction'])) {
-            $parts[] = "Introduction:\n".implode("\n\n", $sections['Introduction']);
-        }
-
-        if (! empty($sections['Key Features and Benefits'])) {
-            $parts[] = "Key Features and Benefits:\n".implode("\n", self::prefixBullets($sections['Key Features and Benefits']));
-        }
-
-        if (! empty($sections['Specifications'])) {
-            $parts[] = "Specifications:\n".implode("\n", self::prefixBullets($sections['Specifications']));
-        }
-
-        if (! empty($sections['Common Uses'])) {
-            $parts[] = "Common Uses:\n".implode("\n\n", $sections['Common Uses']);
-        }
-
-        if (! empty($sections['Other Details'])) {
-            $parts[] = "Other Details:\n".implode("\n", self::prefixBullets($sections['Other Details']));
+        foreach (self::SECTION_ORDER as $sectionName) {
+            $sectionText = self::formatSection($sectionName, $sections[$sectionName] ?? []);
+            if ($sectionText !== '') {
+                $parts[] = $sectionText;
+            }
         }
 
         return trim(implode("\n\n", $parts));
+    }
+
+    /**
+     * @param  array<string, list<string>>  $sections
+     * @return list<array{key:string,text:string,rank:int,is_primary:bool}>
+     */
+    private static function buildChunksFromSections(string $header, array $sections, string $fullText): array
+    {
+        $chunks = [];
+        $rank = 1;
+
+        $mainBody = self::formatSection('Introduction', $sections['Introduction'] ?? []);
+        if ($mainBody === '') {
+            $mainBody = self::formatSectionGroup($sections, [
+                'Key Features and Benefits',
+                'Specifications',
+            ]);
+        }
+        if ($mainBody === '') {
+            $mainBody = self::formatSectionGroup($sections, [
+                'Common Uses',
+                'Other Details',
+            ]);
+        }
+        if ($mainBody === '') {
+            $mainBody = $fullText;
+        }
+
+        $mainText = self::composeChunkText($header, $mainBody);
+        if ($mainText !== '') {
+            $chunks[] = [
+                'key' => self::PRIMARY_CHUNK_KEY,
+                'text' => $mainText,
+                'rank' => $rank++,
+                'is_primary' => true,
+            ];
+        }
+
+        $featuresSpecsText = self::composeChunkText(
+            $header,
+            self::formatSectionGroup($sections, [
+                'Key Features and Benefits',
+                'Specifications',
+            ]),
+        );
+        if ($featuresSpecsText !== '') {
+            $chunks[] = [
+                'key' => 'features_specs',
+                'text' => $featuresSpecsText,
+                'rank' => $rank++,
+                'is_primary' => false,
+            ];
+        }
+
+        $usesOtherText = self::composeChunkText(
+            $header,
+            self::formatSectionGroup($sections, [
+                'Common Uses',
+                'Other Details',
+            ]),
+        );
+        if ($usesOtherText !== '') {
+            $chunks[] = [
+                'key' => 'uses_other',
+                'text' => $usesOtherText,
+                'rank' => $rank++,
+                'is_primary' => false,
+            ];
+        }
+
+        if ($chunks !== []) {
+            return $chunks;
+        }
+
+        return [[
+            'key' => self::PRIMARY_CHUNK_KEY,
+            'text' => $fullText,
+            'rank' => 1,
+            'is_primary' => true,
+        ]];
+    }
+
+    private static function composeChunkText(string $header, string $body): string
+    {
+        $parts = [];
+
+        if ($header !== '') {
+            $parts[] = $header;
+        }
+
+        $body = trim($body);
+        if ($body !== '') {
+            $parts[] = $body;
+        }
+
+        return trim(implode("\n\n", $parts));
+    }
+
+    /**
+     * @param  array<string, list<string>>  $sections
+     * @param  list<string>  $sectionNames
+     */
+    private static function formatSectionGroup(array $sections, array $sectionNames): string
+    {
+        $parts = [];
+
+        foreach ($sectionNames as $sectionName) {
+            $sectionText = self::formatSection($sectionName, $sections[$sectionName] ?? []);
+            if ($sectionText !== '') {
+                $parts[] = $sectionText;
+            }
+        }
+
+        return trim(implode("\n\n", $parts));
+    }
+
+    /**
+     * @param  list<string>  $items
+     */
+    private static function formatSection(string $sectionName, array $items): string
+    {
+        if ($items === []) {
+            return '';
+        }
+
+        return match ($sectionName) {
+            'Introduction', 'Common Uses' => $sectionName.":\n".implode("\n\n", $items),
+            'Key Features and Benefits', 'Specifications', 'Other Details' => $sectionName.":\n"
+                .implode("\n", self::prefixBullets($items)),
+            default => $sectionName.":\n".implode("\n", $items),
+        };
     }
 
     private static function removeNodesByClass(DOMXPath $xpath, array $classNames): void

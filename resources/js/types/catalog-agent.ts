@@ -48,6 +48,7 @@ export type CatalogReloadRunPayload = {
     export_progress?: number;
     product_count?: number;
     variant_count?: number;
+    embedding_chunk_count?: number;
     chunk_count?: number;
     last_chunk_error?: string;
     error?: string;

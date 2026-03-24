@@ -12,6 +12,7 @@ final readonly class CatalogExportResult
     public function __construct(
         public int $productCount,
         public int $variantCount,
+        public int $embeddingChunkCount,
         public string $productsJsonlPath,
         public string $categoriesJsonlPath,
         public string $brandsJsonlPath,

@@ -7,6 +7,7 @@ use App\CatalogAgent\ChatSessionState;
 use OpenAI\Responses\Chat\CreateResponse;
 use OpenAI\Responses\Chat\CreateResponseToolCall;
 use OpenAI\Responses\Meta\MetaInformation;
+use Qdrant\Models\ScoredPoint;
 use Tests\TestCase;
 
 class CatalogChatAgentTest extends TestCase
@@ -43,6 +44,92 @@ class CatalogChatAgentTest extends TestCase
         $reply = $agent->chat($this->app['session']->driver(), 'warehouse sensor');
 
         $this->assertSame("#1: Fixture Sensor (SKU: OSFHU-ITW)", $reply);
+    }
+
+    public function test_chunk_hits_are_collapsed_to_one_result_per_sku(): void
+    {
+        $agent = new LoopingCatalogChatAgent([]);
+        $points = [
+            new ScoredPoint(
+                id: 'chunk-a',
+                version: 1,
+                score: 0.98,
+                payload: [
+                    'sku' => 'OSFHU-ITW',
+                    'name' => 'Fixture Sensor',
+                    'brand' => 'Acme',
+                    'categories' => ['Sensors'],
+                    'text' => 'Product: Fixture Sensor'."\n".'SKU: OSFHU-ITW'."\n\n".'Full product text A',
+                ],
+            ),
+            new ScoredPoint(
+                id: 'chunk-b',
+                version: 1,
+                score: 0.96,
+                payload: [
+                    'sku' => 'OSFHU-ITW',
+                    'name' => 'Fixture Sensor',
+                    'brand' => 'Acme',
+                    'categories' => ['Sensors'],
+                    'text' => 'Product: Fixture Sensor'."\n".'SKU: OSFHU-ITW'."\n\n".'Full product text B',
+                ],
+            ),
+            new ScoredPoint(
+                id: 'chunk-c',
+                version: 1,
+                score: 0.95,
+                payload: [
+                    'sku' => 'ABC-123',
+                    'name' => 'Second Product',
+                    'brand' => 'Acme',
+                    'categories' => ['Sensors'],
+                    'text' => 'Product: Second Product'."\n".'SKU: ABC-123'."\n\n".'Full product text C',
+                ],
+            ),
+        ];
+
+        $collapsed = $agent->collapseForTest($points, 2);
+        $toolHits = $agent->formatToolHitsForTest($collapsed);
+        $sessionHits = $agent->formatSessionHitsForTest($collapsed);
+
+        $this->assertCount(2, $collapsed);
+        $this->assertSame('chunk-a', $toolHits[0]['point_id']);
+        $this->assertSame('OSFHU-ITW', $toolHits[0]['sku']);
+        $this->assertSame('Full product text A', substr((string) $toolHits[0]['text'], -19));
+        $this->assertSame('', $sessionHits[0]['text_snippet']);
+        $this->assertArrayNotHasKey('text', $sessionHits[0]);
+    }
+
+    public function test_chunk_hit_collapse_can_exclude_seed_skus(): void
+    {
+        $agent = new LoopingCatalogChatAgent([]);
+        $points = [
+            new ScoredPoint(
+                id: 'seed-main',
+                version: 1,
+                score: 0.99,
+                payload: [
+                    'sku' => 'OSFHU-ITW',
+                    'name' => 'Fixture Sensor',
+                    'text' => 'Product: Fixture Sensor'."\n".'SKU: OSFHU-ITW',
+                ],
+            ),
+            new ScoredPoint(
+                id: 'other-main',
+                version: 1,
+                score: 0.97,
+                payload: [
+                    'sku' => 'ABC-123',
+                    'name' => 'Second Product',
+                    'text' => 'Product: Second Product'."\n".'SKU: ABC-123',
+                ],
+            ),
+        ];
+
+        $collapsed = $agent->collapseForTest($points, 2, ['OSFHU-ITW']);
+
+        $this->assertCount(1, $collapsed);
+        $this->assertSame('other-main', $collapsed[0]->id);
     }
 
     private function toolResponse(string $toolCallId): CreateResponse
@@ -129,5 +216,20 @@ class LoopingCatalogChatAgent extends CatalogChatAgent
             ]],
             'message' => null,
         ];
+    }
+
+    public function collapseForTest(array $points, int $limit, array $excludedSkus = []): array
+    {
+        return $this->collapsePointHitsBySku($points, $limit, $excludedSkus);
+    }
+
+    public function formatToolHitsForTest(array $points): array
+    {
+        return $this->formatToolHits($points);
+    }
+
+    public function formatSessionHitsForTest(array $points): array
+    {
+        return $this->formatSessionHits($points);
     }
 }

@@ -95,10 +95,15 @@ final class CatalogVectorIndexService
                 continue;
             }
             $fullPayload = $payload;
-            $fullPayload['text'] = is_string($record['text'] ?? null) ? $record['text'] : '';
+            $fullPayload['text'] = is_string($payload['text'] ?? null)
+                ? $payload['text']
+                : (is_string($record['text'] ?? null) ? $record['text'] : '');
+            $chunkKey = is_string($payload['chunk_key'] ?? null) && trim((string) $payload['chunk_key']) !== ''
+                ? (string) $payload['chunk_key']
+                : CatalogIds::PRIMARY_CHUNK_KEY;
 
             $points[] = new PointStruct(
-                id: CatalogIds::catalogPointIdForSku($sku),
+                id: CatalogIds::catalogPointIdForChunk($sku, $chunkKey),
                 vector: $vec,
                 payload: $fullPayload,
             );

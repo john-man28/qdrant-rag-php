@@ -23,6 +23,7 @@ class CatalogChatAgent
     private const SESSION_KEY = 'catalog_agent.chat';
     private const SEARCH_PREFIX = 'Represent this sentence for searching relevant passages: ';
     private const MAX_TOOL_CALL_ROUNDS = 4;
+    private const MAX_PRODUCT_CHUNKS = 3;
     private const MAX_SNIPPET_LENGTH = 320;
     private const RECOMMEND_KEYWORDS = [
         'similar',
@@ -655,18 +656,15 @@ PROMPT;
                 collectionName: $this->config->qdrantCollection,
                 query: new NearestQuery($embedding),
                 withPayload: true,
-                limit: $limit,
+                limit: $this->expandedResultLimit($limit),
             );
         } catch (Throwable $exception) {
             return ['error' => sprintf('Nearest search failed: %s', $exception->getMessage())];
         }
 
-        $hits = [];
-        foreach ($response->points as $index => $point) {
-            $hits[] = $this->formatHit($point, $index + 1);
-        }
-
-        $state->lastResults = $hits;
+        $collapsedPoints = $this->collapsePointHitsBySku($response->points, $limit);
+        $hits = $this->formatToolHits($collapsedPoints);
+        $state->lastResults = $this->formatSessionHits($collapsedPoints);
         $state->lastToolName = 'nearestQuery';
 
         return [
@@ -691,6 +689,16 @@ PROMPT;
             $seedResultIndexes,
         );
         $errors = [...$indexErrors, ...$errors];
+        $seedSkusToExclude = $this->coerceStringList(array_merge(
+            $seedSkus,
+            array_values(array_filter(
+                array_map(
+                    static fn (array $seed): ?string => is_string($seed['sku'] ?? null) ? $seed['sku'] : null,
+                    $resolvedIndexSeeds,
+                ),
+                static fn (?string $sku): bool => is_string($sku) && trim($sku) !== '',
+            )),
+        ));
 
         $positiveIds = array_map(
             static fn (array $seed): string => (string) $seed['point_id'],
@@ -721,25 +729,16 @@ PROMPT;
                 collectionName: $this->config->qdrantCollection,
                 query: new RecommendQuery(new RecommendInput($positiveIds)),
                 withPayload: true,
-                limit: $limit + count($positiveIds),
+                limit: $this->expandedResultLimit($limit + count($seedSkusToExclude)),
             );
         } catch (Throwable $exception) {
             return ['error' => sprintf('Recommendation search failed: %s', $exception->getMessage())];
         }
 
-        $formattedHits = [];
-        foreach ($response->points as $index => $point) {
-            $formattedHits[] = $this->formatHit($point, $index + 1);
-        }
-
         $seedSet = array_values(array_unique($positiveIds));
-        $hits = $this->filterOutSeedResults($formattedHits, $seedSet, $limit);
-        foreach ($hits as $index => &$hit) {
-            $hit['result_index'] = $index + 1;
-        }
-        unset($hit);
-
-        $state->lastResults = $hits;
+        $collapsedPoints = $this->collapsePointHitsBySku($response->points, $limit, $seedSkusToExclude);
+        $hits = $this->formatToolHits($collapsedPoints);
+        $state->lastResults = $this->formatSessionHits($collapsedPoints);
         $state->lastToolName = 'recommendQuery';
 
         return [
@@ -753,6 +752,11 @@ PROMPT;
 
     private function resolvePointIdForSku(string $sku): ?string
     {
+        $sku = strtoupper(trim($sku));
+        if ($sku === '') {
+            return null;
+        }
+
         try {
             $pointId = CatalogIds::catalogPointIdForSku($sku);
         } catch (Throwable) {
@@ -773,6 +777,26 @@ PROMPT;
             $scrollResponse = $this->qdrant->scroll(
                 collectionName: $this->config->qdrantCollection,
                 scrollFilter: new Filter(
+                    must: [
+                        FieldCondition::matchValue('sku', $sku),
+                        FieldCondition::matchValue('is_primary', true),
+                    ],
+                ),
+                withPayload: true,
+                limit: 1,
+            );
+        } catch (Throwable) {
+            return null;
+        }
+
+        if ($scrollResponse->points !== []) {
+            return (string) $scrollResponse->points[0]->id;
+        }
+
+        try {
+            $fallbackScrollResponse = $this->qdrant->scroll(
+                collectionName: $this->config->qdrantCollection,
+                scrollFilter: new Filter(
                     must: [FieldCondition::matchValue('sku', $sku)],
                 ),
                 withPayload: true,
@@ -782,11 +806,11 @@ PROMPT;
             return null;
         }
 
-        if ($scrollResponse->points === []) {
+        if ($fallbackScrollResponse->points === []) {
             return null;
         }
 
-        return (string) $scrollResponse->points[0]->id;
+        return (string) $fallbackScrollResponse->points[0]->id;
     }
 
     /**
@@ -828,39 +852,91 @@ PROMPT;
         return [$resolved, $errors];
     }
 
-    /**
-     * @param list<array<string, mixed>> $hits
-     * @param list<string> $seedPointIds
-     * @return list<array<string, mixed>>
-     */
-    private function filterOutSeedResults(array $hits, array $seedPointIds, int $limit): array
+    protected function expandedResultLimit(int $limit): int
     {
-        $filtered = [];
+        return max(1, $limit) * self::MAX_PRODUCT_CHUNKS;
+    }
 
-        foreach ($hits as $hit) {
-            $pointId = (string) ($hit['point_id'] ?? '');
-            if (in_array($pointId, $seedPointIds, true)) {
+    /**
+     * @param  list<PointStruct|\Qdrant\Models\ScoredPoint|\Qdrant\Models\Record>  $points
+     * @param  list<string>  $excludedSkus
+     * @return list<PointStruct|\Qdrant\Models\ScoredPoint|\Qdrant\Models\Record>
+     */
+    protected function collapsePointHitsBySku(array $points, int $limit, array $excludedSkus = []): array
+    {
+        $collapsed = [];
+        $seenSkuKeys = [];
+        $excludedSkuKeys = [];
+
+        foreach ($excludedSkus as $excludedSku) {
+            $skuKey = $this->normalizeSkuKey($excludedSku);
+            if ($skuKey !== null) {
+                $excludedSkuKeys[$skuKey] = true;
+            }
+        }
+
+        foreach ($points as $point) {
+            $payload = is_array($point->payload ?? null) ? $point->payload : [];
+            $sku = is_string($payload['sku'] ?? null) ? (string) $payload['sku'] : '';
+            $skuKey = $this->normalizeSkuKey($sku);
+            if ($skuKey === null || isset($excludedSkuKeys[$skuKey]) || isset($seenSkuKeys[$skuKey])) {
                 continue;
             }
 
-            $filtered[] = $hit;
-            if (count($filtered) >= $limit) {
+            $seenSkuKeys[$skuKey] = true;
+            $collapsed[] = $point;
+
+            if (count($collapsed) >= $limit) {
                 break;
             }
         }
 
-        return $filtered;
+        return $collapsed;
+    }
+
+    /**
+     * @param  list<PointStruct|\Qdrant\Models\ScoredPoint|\Qdrant\Models\Record>  $points
+     * @return list<array<string, mixed>>
+     */
+    protected function formatToolHits(array $points): array
+    {
+        $hits = [];
+
+        foreach ($points as $index => $point) {
+            $hits[] = $this->formatHit($point, $index + 1, includeText: true, includeSnippet: true);
+        }
+
+        return $hits;
+    }
+
+    /**
+     * @param  list<PointStruct|\Qdrant\Models\ScoredPoint|\Qdrant\Models\Record>  $points
+     * @return list<array<string, mixed>>
+     */
+    protected function formatSessionHits(array $points): array
+    {
+        $hits = [];
+
+        foreach ($points as $index => $point) {
+            $hits[] = $this->formatHit($point, $index + 1, includeText: false, includeSnippet: false);
+        }
+
+        return $hits;
     }
 
     /**
      * @return array<string, mixed>
      */
-    private function formatHit(PointStruct|\Qdrant\Models\ScoredPoint|\Qdrant\Models\Record $point, int $resultIndex): array
-    {
-        $payload = $point->payload ?? [];
+    protected function formatHit(
+        PointStruct|\Qdrant\Models\ScoredPoint|\Qdrant\Models\Record $point,
+        int $resultIndex,
+        bool $includeText,
+        bool $includeSnippet,
+    ): array {
+        $payload = is_array($point->payload ?? null) ? $point->payload : [];
         $text = trim((string) ($payload['text'] ?? ''));
 
-        return [
+        $hit = [
             'result_index' => $resultIndex,
             'point_id' => (string) $point->id,
             'sku' => $payload['sku'] ?? null,
@@ -868,8 +944,23 @@ PROMPT;
             'brand' => $payload['brand'] ?? null,
             'categories' => is_array($payload['categories'] ?? null) ? $payload['categories'] : [],
             'score' => property_exists($point, 'score') ? $point->score : null,
-            'text_snippet' => $this->truncateText($text),
+            'text_snippet' => $includeSnippet ? $this->truncateText($text) : '',
         ];
+
+        if ($includeText) {
+            $hit['text'] = $text;
+        }
+
+        return $hit;
+    }
+
+    private function normalizeSkuKey(string $sku): ?string
+    {
+        try {
+            return CatalogIds::normalizeSku($sku);
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     private function truncateText(string $text): string

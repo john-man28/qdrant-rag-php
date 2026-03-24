@@ -43,10 +43,12 @@ function deriveReloadProgress(data: CatalogReloadStatusPayload): ReloadProgressV
 
     const productCount = typeof run.product_count === 'number' ? run.product_count : undefined;
     const variantCount = typeof run.variant_count === 'number' ? run.variant_count : undefined;
+    const embeddingChunkCount =
+        typeof run.embedding_chunk_count === 'number' ? run.embedding_chunk_count : undefined;
     const chunkCount = typeof run.chunk_count === 'number' ? run.chunk_count : undefined;
 
     let statsLine: string | null = null;
-    if (phase === 'indexing' && (productCount != null || chunkCount != null)) {
+    if (phase === 'indexing' && (productCount != null || embeddingChunkCount != null || chunkCount != null)) {
         const parts: string[] = [];
         if (productCount != null) {
             parts.push(`${productCount} products`);
@@ -54,8 +56,11 @@ function deriveReloadProgress(data: CatalogReloadStatusPayload): ReloadProgressV
         if (variantCount != null) {
             parts.push(`${variantCount} variants`);
         }
+        if (embeddingChunkCount != null) {
+            parts.push(`${embeddingChunkCount} embedding chunks`);
+        }
         if (chunkCount != null) {
-            parts.push(`${chunkCount} chunks to index`);
+            parts.push(`${chunkCount} chunk files to index`);
         }
         if (parts.length > 0) {
             statsLine = parts.join(' · ');

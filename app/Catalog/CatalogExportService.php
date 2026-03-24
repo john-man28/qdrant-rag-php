@@ -55,7 +55,7 @@ final class CatalogExportService
             throw new RuntimeException("Cannot write {$variantsFile}");
         }
 
-        [$productCount, $variantCount] = $this->fetchAndWriteProducts(
+        [$productCount, $variantCount, $embeddingChunkCount] = $this->fetchAndWriteProducts(
             $baseUrl,
             $productsFp,
             $variantsFp,
@@ -75,6 +75,7 @@ final class CatalogExportService
         return new CatalogExportResult(
             productCount: $productCount,
             variantCount: $variantCount,
+            embeddingChunkCount: $embeddingChunkCount,
             productsJsonlPath: $productsFile,
             categoriesJsonlPath: $categoriesFile,
             brandsJsonlPath: $brandsFile,
@@ -297,7 +298,7 @@ final class CatalogExportService
      * @param  array<int, string>  $categoryLookup
      * @param  array<int, string>  $brandLookup
      * @param  (callable(array<string, mixed>): void)|null  $onProgress
-     * @return array{0: int, 1: int}
+     * @return array{0: int, 1: int, 2: int}
      */
     public function fetchAndWriteProducts(
         string $baseUrl,
@@ -317,13 +318,15 @@ final class CatalogExportService
 
         $productCount = 0;
         $variantCount = 0;
+        $embeddingChunkCount = 0;
 
         $writeProducts = function (array $products) use (
             $productsFp,
             $categoryLookup,
             $brandLookup,
             &$productCount,
-            &$variantCount
+            &$variantCount,
+            &$embeddingChunkCount
         ) {
             foreach ($products as $product) {
                 $sku = (string) ($product['sku'] ?? '');
@@ -336,23 +339,12 @@ final class CatalogExportService
                 $brand = $this->resolveProductBrand($product, $brandLookup);
                 $categories = $this->resolveProductCategories($product, $categoryLookup);
                 $priceLines = CatalogPricing::buildProductPriceLines($product);
-                $normalized = ProductDescriptionNormalizer::normalizeProductDescriptionToText(
-                    $product['description'] ?? null,
-                    $product['name'] ?? null,
-                    $product['sku'] ?? null,
-                    $brand,
-                    $categories,
-                    $priceLines
-                );
+                $chunkRecords = $this->buildProductChunkRecords($product, $brand, $categories, $priceLines);
 
-                $formatted = [
-                    'payload' => CatalogPricing::normalizeProductPayload($product) + [
-                        'brand' => $brand,
-                        'categories' => $categories,
-                    ],
-                    'text' => $normalized,
-                ];
-                fwrite($productsFp, json_encode($formatted)."\n");
+                foreach ($chunkRecords as $formatted) {
+                    fwrite($productsFp, json_encode($formatted)."\n");
+                    $embeddingChunkCount++;
+                }
                 $productCount++;
                 $variantCount += is_array($product['variants'] ?? null) ? count($product['variants']) : 0;
             }
@@ -377,7 +369,7 @@ final class CatalogExportService
         $emitProductPage(1);
 
         if ($totalPages <= 1) {
-            return [$productCount, $variantCount];
+            return [$productCount, $variantCount, $embeddingChunkCount];
         }
 
         $urls = [];
@@ -399,7 +391,65 @@ final class CatalogExportService
             usleep($this->client->batchDelayMicroseconds());
         }
 
-        return [$productCount, $variantCount];
+        return [$productCount, $variantCount, $embeddingChunkCount];
+    }
+
+    /**
+     * @param  list<string>  $categories
+     * @param  list<string>  $priceLines
+     * @return list<array{payload:array<string, mixed>,text:string}>
+     */
+    public function buildProductChunkRecords(
+        array $product,
+        ?string $brand,
+        array $categories,
+        array $priceLines,
+    ): array {
+        $artifacts = ProductDescriptionNormalizer::buildProductTextArtifacts(
+            $product['description'] ?? null,
+            $product['name'] ?? null,
+            $product['sku'] ?? null,
+            $brand,
+            $categories,
+            $priceLines,
+        );
+
+        $basePayload = CatalogPricing::normalizeProductPayload($product) + [
+            'brand' => $brand,
+            'categories' => $categories,
+            'text' => $artifacts['full_text'],
+        ];
+
+        $records = [];
+
+        foreach ($artifacts['chunks'] as $chunk) {
+            $chunkText = trim((string) ($chunk['text'] ?? ''));
+            if ($chunkText === '') {
+                continue;
+            }
+
+            $records[] = [
+                'payload' => $basePayload + [
+                    'chunk_key' => (string) ($chunk['key'] ?? 'main'),
+                    'chunk_rank' => (int) ($chunk['rank'] ?? 1),
+                    'is_primary' => (bool) ($chunk['is_primary'] ?? false),
+                ],
+                'text' => $chunkText,
+            ];
+        }
+
+        if ($records !== []) {
+            return $records;
+        }
+
+        return [[
+            'payload' => $basePayload + [
+                'chunk_key' => 'main',
+                'chunk_rank' => 1,
+                'is_primary' => true,
+            ],
+            'text' => $artifacts['full_text'],
+        ]];
     }
 
     /**
