@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace App\CatalogAgent;
+namespace App\Services\CatalogAgent;
 
 final readonly class CatalogAgentConfig
 {
@@ -16,8 +16,7 @@ final readonly class CatalogAgentConfig
         public string $qdrantCollection,
         public int $qdrantTimeout,
         public int $chatTopK,
-    ) {
-    }
+    ) {}
 
     public static function fromConfig(): self
     {
@@ -30,7 +29,7 @@ final readonly class CatalogAgentConfig
             qdrantUrl: (string) config('services.qdrant.url', 'http://localhost:6333'),
             qdrantCollection: (string) config('services.qdrant.collection', 'catalog'),
             qdrantTimeout: (int) config('services.qdrant.timeout', 60),
-            chatTopK: (int) config('services.catalog_agent.chat_top_k', 10),
+            chatTopK: (int) config('catalog.agent.chat_top_k', 10),
         );
     }
 }

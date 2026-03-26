@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace App\Jobs;
 
-use App\Catalog\CatalogExportService;
-use App\Catalog\CatalogReloadCoordinator;
+use App\Services\Catalog\CatalogExportService;
+use App\Services\Catalog\CatalogReloadCoordinator;
 use Illuminate\Bus\Batch;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -36,14 +36,10 @@ class ExportCatalogJob implements ShouldQueue
             $result = $export->exportToRunDirectory($dir, function (array $fields) use ($coordinator, $runId): void {
                 $coordinator->putStatus($runId, $fields);
             });
-        } catch (Throwable $e) {
-            $coordinator->putStatus($this->runId, [
-                'phase' => 'failed',
-                'error' => $e->getMessage(),
-                'finished_at' => now()->toIso8601String(),
-            ]);
-            $coordinator->clearActiveRun();
-            throw $e;
+        } catch (Throwable $exception) {
+            $coordinator->markFailed($this->runId, $exception);
+
+            throw $exception;
         }
 
         $coordinator->putStatus($this->runId, [
@@ -60,12 +56,7 @@ class ExportCatalogJob implements ShouldQueue
         }
 
         if ($jobs === []) {
-            $coordinator->putStatus($this->runId, [
-                'phase' => 'completed',
-                'finished_at' => now()->toIso8601String(),
-                'error' => null,
-            ]);
-            $coordinator->clearActiveRun();
+            $coordinator->markCompleted($this->runId);
 
             return;
         }
@@ -74,24 +65,13 @@ class ExportCatalogJob implements ShouldQueue
             ->name('Catalog vector index '.$runId)
             ->allowFailures(false)
             ->then(function (Batch $batch) use ($runId, $coordinator) {
-                $coordinator->putStatus($runId, [
-                    'phase' => 'completed',
-                    'finished_at' => now()->toIso8601String(),
-                    'error' => null,
-                ]);
+                $coordinator->markCompleted($runId);
             })
-            ->catch(function (Batch $batch, Throwable $e) use ($runId, $coordinator) {
-                $coordinator->putStatus($runId, [
-                    'phase' => 'failed',
-                    'error' => $e->getMessage(),
-                    'finished_at' => now()->toIso8601String(),
-                ]);
+            ->catch(function (Batch $batch, Throwable $exception) use ($runId, $coordinator) {
+                $coordinator->markFailed($runId, $exception);
             })
             ->finally(function (Batch $batch) use ($runId, $coordinator) {
-                $coordinator->putStatus($runId, [
-                    'batch_finished_at' => now()->toIso8601String(),
-                ]);
-                $coordinator->clearActiveRun();
+                $coordinator->markBatchFinished($runId);
             })
             ->dispatch();
 

@@ -4,16 +4,15 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers;
 
-use App\Catalog\CatalogReloadCoordinator;
-use App\Catalog\CatalogReloadStatusPresenter;
-use App\CatalogAgent\AgentRuntimeException;
-use App\CatalogAgent\CatalogChatAgent;
-use App\Jobs\BeginCatalogReloadJob;
+use App\Http\Requests\CatalogAgent\CatalogAgentMessageRequest;
+use App\Http\Requests\CatalogAgent\CatalogReloadStatusRequest;
+use App\Services\Catalog\CatalogReloadCoordinator;
+use App\Services\Catalog\CatalogReloadStatusPresenter;
+use App\Services\CatalogAgent\AgentRuntimeException;
+use App\Services\CatalogAgent\CatalogChatAgent;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Bus;
-use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Str;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -24,14 +23,10 @@ class CatalogAgentController extends Controller
         return Inertia::render('CatalogAgentApp', $this->pageProps($request, $agent));
     }
 
-    public function message(Request $request, CatalogChatAgent $agent): JsonResponse
+    public function message(CatalogAgentMessageRequest $request, CatalogChatAgent $agent): JsonResponse
     {
-        $validated = $request->validate([
-            'message' => ['required', 'string', 'max:4000'],
-        ]);
-
         try {
-            $reply = $agent->chat($request->session(), $validated['message']);
+            $reply = $agent->chat($request->session(), $request->message());
 
             return response()->json([
                 'ok' => true,
@@ -59,65 +54,61 @@ class CatalogAgentController extends Controller
 
     public function startCatalogReload(CatalogReloadCoordinator $coordinator): JsonResponse
     {
-        $lock = Cache::lock('catalog-reload-mutex', 120);
-        $runId = '';
+        $result = $coordinator->startCatalogReload();
 
-        try {
-            $lock->block(5);
-
-            if ($coordinator->activeRunId() !== null) {
-                return response()->json([
-                    'ok' => false,
-                    'error' => 'A catalog reload is already in progress.',
-                    'run_id' => $coordinator->activeRunId(),
-                ], 409);
-            }
-
-            $runId = Str::uuid()->toString();
-            $coordinator->setActiveRun($runId);
-            BeginCatalogReloadJob::dispatch($runId);
-        } finally {
-            $lock->release();
+        if (! $result['started']) {
+            return response()->json([
+                'ok' => false,
+                'error' => 'A catalog reload is already in progress.',
+                'run_id' => $result['run_id'],
+            ], 409);
         }
 
         return response()->json([
             'ok' => true,
-            'run_id' => $runId,
+            'run_id' => $result['run_id'],
         ], 202);
     }
 
-    public function catalogReloadStatus(Request $request, CatalogReloadCoordinator $coordinator): JsonResponse
-    {
-        $validated = $request->validate([
-            'run_id' => ['required', 'uuid'],
-        ]);
-
-        $runId = $validated['run_id'];
-        $status = CatalogReloadStatusPresenter::enrich($coordinator->getStatus($runId));
-
-        $batchPayload = null;
-        if (is_array($status) && isset($status['batch_id']) && is_string($status['batch_id'])) {
-            $batch = Bus::findBatch($status['batch_id']);
-            if ($batch !== null) {
-                $batchPayload = [
-                    'id' => $batch->id,
-                    'name' => $batch->name,
-                    'total_jobs' => $batch->totalJobs,
-                    'pending_jobs' => $batch->pendingJobs,
-                    'failed_jobs' => $batch->failedJobs,
-                    'progress' => $batch->progress(),
-                    'finished' => $batch->finished(),
-                    'cancelled' => $batch->cancelled(),
-                    'failed' => $batch->failedJobs > 0,
-                ];
-            }
-        }
+    public function catalogReloadStatus(
+        CatalogReloadStatusRequest $request,
+        CatalogReloadCoordinator $coordinator,
+    ): JsonResponse {
+        $status = CatalogReloadStatusPresenter::enrich($coordinator->getStatus($request->runId()));
 
         return response()->json([
             'ok' => true,
             'run' => $status,
-            'batch' => $batchPayload,
+            'batch' => $this->batchPayload($status),
         ]);
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $status
+     * @return array<string, mixed>|null
+     */
+    private function batchPayload(?array $status): ?array
+    {
+        if (! is_array($status) || ! isset($status['batch_id']) || ! is_string($status['batch_id'])) {
+            return null;
+        }
+
+        $batch = Bus::findBatch($status['batch_id']);
+        if ($batch === null) {
+            return null;
+        }
+
+        return [
+            'id' => $batch->id,
+            'name' => $batch->name,
+            'total_jobs' => $batch->totalJobs,
+            'pending_jobs' => $batch->pendingJobs,
+            'failed_jobs' => $batch->failedJobs,
+            'progress' => $batch->progress(),
+            'finished' => $batch->finished(),
+            'cancelled' => $batch->cancelled(),
+            'failed' => $batch->failedJobs > 0,
+        ];
     }
 
     /**

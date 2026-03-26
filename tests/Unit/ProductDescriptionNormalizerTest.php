@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
-use App\Catalog\ProductDescriptionNormalizer;
+use App\Services\Catalog\ProductDescriptionNormalizer;
 use PHPUnit\Framework\TestCase;
 
 class ProductDescriptionNormalizerTest extends TestCase

@@ -2,8 +2,8 @@
 
 namespace Tests\Feature;
 
-use App\CatalogAgent\AgentRuntimeException;
-use App\CatalogAgent\CatalogChatAgent;
+use App\Services\CatalogAgent\AgentRuntimeException;
+use App\Services\CatalogAgent\CatalogChatAgent;
 use Inertia\Testing\AssertableInertia;
 use Mockery;
 use Tests\TestCase;
@@ -85,6 +85,22 @@ class CatalogAgentTest extends TestCase
                 ],
                 'runtimeError' => null,
             ]);
+    }
+
+    public function test_message_endpoint_validates_the_message_payload(): void
+    {
+        $agent = Mockery::mock(CatalogChatAgent::class);
+        $agent->shouldNotReceive('chat');
+
+        $this->app->instance(CatalogChatAgent::class, $agent);
+
+        $response = $this->postJson(route('catalog-agent.message'), [
+            'message' => '',
+        ]);
+
+        $response
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['message']);
     }
 
     public function test_message_endpoint_returns_a_validation_style_error_payload_when_the_agent_fails(): void

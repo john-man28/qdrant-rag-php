@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
-use App\Catalog\CatalogReloadCoordinator;
 use App\Jobs\BeginCatalogReloadJob;
+use App\Services\Catalog\CatalogReloadCoordinator;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
@@ -53,6 +53,13 @@ class CatalogReloadTest extends TestCase
     public function test_reload_status_requires_run_id(): void
     {
         $this->getJson(route('catalog-agent.reload.status'))->assertStatus(422);
+    }
+
+    public function test_reload_status_requires_a_valid_uuid_run_id(): void
+    {
+        $this->getJson(route('catalog-agent.reload.status', ['run_id' => 'invalid-run-id']))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['run_id']);
     }
 
     public function test_reload_status_returns_enriched_labels(): void

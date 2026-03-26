@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace App\Catalog;
+namespace App\Services\Catalog;
 
 use Illuminate\Support\Facades\File;
 use RuntimeException;
@@ -69,7 +69,7 @@ final class CatalogExportService
         $chunksDir = $runDirectory.'/chunks';
         File::ensureDirectoryExists($chunksDir);
 
-        $linesPerChunk = max(1, (int) config('services.catalog_reload.lines_per_chunk_file', 256));
+        $linesPerChunk = max(1, (int) config('catalog.reload.lines_per_chunk_file', 256));
         $chunkRelativePaths = $this->splitJsonlIntoChunkFiles($productsFile, $chunksDir, $linesPerChunk, $onProgress);
 
         return new CatalogExportResult(

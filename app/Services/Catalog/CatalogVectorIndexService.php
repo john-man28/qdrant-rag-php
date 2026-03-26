@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace App\Catalog;
+namespace App\Services\Catalog;
 
-use App\CatalogAgent\CatalogIds;
+use App\Services\CatalogAgent\CatalogIds;
 use InvalidArgumentException;
 use Qdrant\Models\PointStruct;
 use Qdrant\QdrantClient;
@@ -28,8 +28,8 @@ final class CatalogVectorIndexService
         $collection = $this->collectionService->collectionName();
         $client = $this->collectionService->makeClient();
 
-        $embedBatch = max(1, (int) config('services.catalog_reload.embed_batch_size', 64));
-        $uploadBatch = max(1, (int) config('services.catalog_reload.qdrant_upload_batch_size', 64));
+        $embedBatch = max(1, (int) config('catalog.reload.embed_batch_size', 64));
+        $uploadBatch = max(1, (int) config('catalog.reload.qdrant_upload_batch_size', 64));
 
         $handle = fopen($absolutePath, 'r');
         if ($handle === false) {

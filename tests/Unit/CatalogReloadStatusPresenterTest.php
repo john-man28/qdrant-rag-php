@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
-use App\Catalog\CatalogReloadStatusPresenter;
+use App\Services\Catalog\CatalogReloadStatusPresenter;
 use PHPUnit\Framework\TestCase;
 
 class CatalogReloadStatusPresenterTest extends TestCase

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace App\CatalogAgent;
+namespace App\Services\CatalogAgent;
 
 use InvalidArgumentException;
 use Symfony\Component\Uid\Uuid;

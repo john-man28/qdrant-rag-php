@@ -2,11 +2,12 @@
 
 declare(strict_types=1);
 
-namespace App\CatalogAgent;
+namespace App\Services\CatalogAgent;
 
 use GuzzleHttp\Client as GuzzleClient;
 use Illuminate\Contracts\Session\Session;
 use OpenAI\Client as OpenAIClient;
+use OpenAI\Responses\Chat\CreateResponse;
 use OpenAI\Responses\Chat\CreateResponseMessage;
 use OpenAI\Responses\Chat\CreateResponseToolCall;
 use Qdrant\Models\FieldCondition;
@@ -15,16 +16,23 @@ use Qdrant\Models\NearestQuery;
 use Qdrant\Models\PointStruct;
 use Qdrant\Models\RecommendInput;
 use Qdrant\Models\RecommendQuery;
+use Qdrant\Models\Record;
+use Qdrant\Models\ScoredPoint;
 use Qdrant\QdrantClient;
 use Throwable;
 
 class CatalogChatAgent
 {
     private const SESSION_KEY = 'catalog_agent.chat';
+
     private const SEARCH_PREFIX = 'Represent this sentence for searching relevant passages: ';
+
     private const MAX_TOOL_CALL_ROUNDS = 4;
+
     private const MAX_PRODUCT_CHUNKS = 3;
+
     private const MAX_SNIPPET_LENGTH = 320;
+
     private const RECOMMEND_KEYWORDS = [
         'similar',
         'alternative',
@@ -38,6 +46,7 @@ class CatalogChatAgent
         'like that',
         'equivalent',
     ];
+
     private const DEMONSTRATIVE_ANCHOR_HINTS = [
         'this',
         'that',
@@ -47,6 +56,7 @@ class CatalogChatAgent
         'above',
         'earlier',
     ];
+
     private const SYSTEM_PROMPT = <<<'PROMPT'
 You are a product catalog assistant for a browser chat app.
 
@@ -61,7 +71,9 @@ Use tools whenever you need catalog facts. Follow these rules:
 PROMPT;
 
     private readonly CatalogAgentConfig $config;
+
     private readonly OpenAIClient $openai;
+
     private readonly QdrantClient $qdrant;
 
     public function __construct(?CatalogAgentConfig $config = null)
@@ -388,8 +400,8 @@ PROMPT;
     }
 
     /**
-     * @param list<array<string, mixed>> $messages
-     * @param list<array<string, mixed>> $tools
+     * @param  list<array<string, mixed>>  $messages
+     * @param  list<array<string, mixed>>  $tools
      */
     protected function createCompletion(
         array $messages,
@@ -397,7 +409,7 @@ PROMPT;
         string $routeMode,
         string $routeHint,
         bool $forceTool,
-    ): \OpenAI\Responses\Chat\CreateResponse {
+    ): CreateResponse {
         $toolChoice = $this->selectToolChoice($routeMode, $forceTool);
 
         try {
@@ -426,8 +438,8 @@ PROMPT;
     }
 
     /**
-     * @param list<array<string, mixed>> $messages
-     * @param array<string, mixed> $toolResult
+     * @param  list<array<string, mixed>>  $messages
+     * @param  array<string, mixed>  $toolResult
      */
     protected function createGroundedCompletion(array $messages, string $routeHint, array $toolResult): string
     {
@@ -560,7 +572,7 @@ PROMPT;
     }
 
     /**
-     * @param array<string, mixed>|null $latestToolResult
+     * @param  array<string, mixed>|null  $latestToolResult
      */
     private function finalizeToolLoop(
         ChatSessionState $state,
@@ -638,7 +650,7 @@ PROMPT;
     }
 
     /**
-     * @param array<string, mixed> $arguments
+     * @param  array<string, mixed>  $arguments
      * @return array<string, mixed>
      */
     private function nearestQuery(array $arguments, ChatSessionState $state): array
@@ -675,7 +687,7 @@ PROMPT;
     }
 
     /**
-     * @param array<string, mixed> $arguments
+     * @param  array<string, mixed>  $arguments
      * @return array<string, mixed>
      */
     private function recommendQuery(array $arguments, ChatSessionState $state): array
@@ -709,6 +721,7 @@ PROMPT;
             $resolvedId = $this->resolvePointIdForSku($sku);
             if ($resolvedId === null) {
                 $errors[] = sprintf("Could not resolve SKU '%s'.", $sku);
+
                 continue;
             }
 
@@ -814,8 +827,8 @@ PROMPT;
     }
 
     /**
-     * @param list<array<string, mixed>> $lastResults
-     * @param list<int> $indexes
+     * @param  list<array<string, mixed>>  $lastResults
+     * @param  list<int>  $indexes
      * @return array{0:list<array<string, mixed>>,1:list<string>}
      */
     private function resolveResultReferences(array $lastResults, array $indexes): array
@@ -827,6 +840,7 @@ PROMPT;
         foreach ($indexes as $index) {
             if ($index < 1 || $index > count($lastResults)) {
                 $errors[] = sprintf('Result index #%d is out of range.', $index);
+
                 continue;
             }
 
@@ -834,6 +848,7 @@ PROMPT;
             $pointId = trim((string) ($item['point_id'] ?? ''));
             if ($pointId === '') {
                 $errors[] = sprintf('Result index #%d is missing a point ID.', $index);
+
                 continue;
             }
 
@@ -858,9 +873,9 @@ PROMPT;
     }
 
     /**
-     * @param  list<PointStruct|\Qdrant\Models\ScoredPoint|\Qdrant\Models\Record>  $points
+     * @param  list<PointStruct|ScoredPoint|Record>  $points
      * @param  list<string>  $excludedSkus
-     * @return list<PointStruct|\Qdrant\Models\ScoredPoint|\Qdrant\Models\Record>
+     * @return list<PointStruct|ScoredPoint|Record>
      */
     protected function collapsePointHitsBySku(array $points, int $limit, array $excludedSkus = []): array
     {
@@ -895,7 +910,7 @@ PROMPT;
     }
 
     /**
-     * @param  list<PointStruct|\Qdrant\Models\ScoredPoint|\Qdrant\Models\Record>  $points
+     * @param  list<PointStruct|ScoredPoint|Record>  $points
      * @return list<array<string, mixed>>
      */
     protected function formatToolHits(array $points): array
@@ -910,7 +925,7 @@ PROMPT;
     }
 
     /**
-     * @param  list<PointStruct|\Qdrant\Models\ScoredPoint|\Qdrant\Models\Record>  $points
+     * @param  list<PointStruct|ScoredPoint|Record>  $points
      * @return list<array<string, mixed>>
      */
     protected function formatSessionHits(array $points): array
@@ -928,7 +943,7 @@ PROMPT;
      * @return array<string, mixed>
      */
     protected function formatHit(
-        PointStruct|\Qdrant\Models\ScoredPoint|\Qdrant\Models\Record $point,
+        PointStruct|ScoredPoint|Record $point,
         int $resultIndex,
         bool $includeText,
         bool $includeSnippet,
@@ -994,7 +1009,7 @@ PROMPT;
             .'- detected_seed_result_indexes: '.json_encode($route->seedResultIndexes, JSON_UNESCAPED_SLASHES)."\n"
             ."- If mode is recommend_only, call recommendQuery unless you need clarification.\n"
             ."- If mode is nearest_only, call nearestQuery.\n"
-            ."- If mode is auto and no usable anchor exists, ask for a SKU or result number.";
+            .'- If mode is auto and no usable anchor exists, ask for a SKU or result number.';
     }
 
     private function selectToolChoice(string $routeMode, bool $forceTool): string
@@ -1016,7 +1031,7 @@ PROMPT;
     }
 
     /**
-     * @param array<string, mixed> $toolResult
+     * @param  array<string, mixed>  $toolResult
      */
     private function fallbackTextFromToolResult(array $toolResult): string
     {
@@ -1047,7 +1062,6 @@ PROMPT;
     }
 
     /**
-     * @param mixed $value
      * @return list<string>
      */
     private function coerceStringList(mixed $value): array
@@ -1082,6 +1096,7 @@ PROMPT;
         foreach ($items as $item) {
             if (! is_numeric($item)) {
                 $errors[] = sprintf("Invalid result index '%s'.", (string) $item);
+
                 continue;
             }
 

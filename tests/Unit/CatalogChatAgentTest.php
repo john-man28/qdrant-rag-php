@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\CatalogAgent\CatalogChatAgent;
-use App\CatalogAgent\ChatSessionState;
+use App\Services\CatalogAgent\CatalogChatAgent;
+use App\Services\CatalogAgent\ChatSessionState;
 use OpenAI\Responses\Chat\CreateResponse;
 use OpenAI\Responses\Chat\CreateResponseToolCall;
 use OpenAI\Responses\Meta\MetaInformation;
@@ -43,7 +43,7 @@ class CatalogChatAgentTest extends TestCase
 
         $reply = $agent->chat($this->app['session']->driver(), 'warehouse sensor');
 
-        $this->assertSame("#1: Fixture Sensor (SKU: OSFHU-ITW)", $reply);
+        $this->assertSame('#1: Fixture Sensor (SKU: OSFHU-ITW)', $reply);
     }
 
     public function test_chunk_hits_are_collapsed_to_one_result_per_sku(): void
@@ -172,17 +172,13 @@ class CatalogChatAgentTest extends TestCase
 class LoopingCatalogChatAgent extends CatalogChatAgent
 {
     /**
-     * @param list<CreateResponse> $responses
+     * @param  list<CreateResponse>  $responses
      */
-    public function __construct(private array $responses)
-    {
-    }
+    public function __construct(private array $responses) {}
 
     public string $groundedReply = '';
 
-    public function validateRuntime(): void
-    {
-    }
+    public function validateRuntime(): void {}
 
     protected function createCompletion(
         array $messages,

@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
-use App\Catalog\BigCommerceCatalogClient;
-use App\Catalog\CatalogExportService;
+use App\Services\Catalog\BigCommerceCatalogClient;
+use App\Services\Catalog\CatalogExportService;
 use PHPUnit\Framework\TestCase;
 
 class CatalogExportServiceTest extends TestCase

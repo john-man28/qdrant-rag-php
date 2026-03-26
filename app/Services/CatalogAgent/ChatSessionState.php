@@ -2,20 +2,19 @@
 
 declare(strict_types=1);
 
-namespace App\CatalogAgent;
+namespace App\Services\CatalogAgent;
 
 final class ChatSessionState
 {
     /**
-     * @param list<array<string, mixed>> $messages
-     * @param list<array<string, mixed>> $lastResults
+     * @param  list<array<string, mixed>>  $messages
+     * @param  list<array<string, mixed>>  $lastResults
      */
     public function __construct(
         public array $messages = [],
         public array $lastResults = [],
         public ?string $lastToolName = null,
-    ) {
-    }
+    ) {}
 
     public static function fromArray(array $data): self
     {

@@ -54,15 +54,4 @@ return [
         'api_token' => env('BC_API_TOKEN_PROD'),
         'store_hash' => env('BC_STORE_HASH_PROD'),
     ],
-
-    'catalog_reload' => [
-        'lines_per_chunk_file' => (int) env('CATALOG_RELOAD_LINES_PER_CHUNK', 256),
-        'embed_batch_size' => (int) env('CATALOG_EMBED_BATCH_SIZE', 64),
-        'qdrant_upload_batch_size' => (int) env('CATALOG_QDRANT_UPLOAD_BATCH_SIZE', 64),
-    ],
-
-    'catalog_agent' => [
-        'chat_top_k' => (int) env('CHAT_TOP_K', 10),
-    ],
-
 ];

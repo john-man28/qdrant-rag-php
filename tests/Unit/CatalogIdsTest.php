@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
-use App\CatalogAgent\CatalogIds;
+use App\Services\CatalogAgent\CatalogIds;
 use PHPUnit\Framework\TestCase;
 
 class CatalogIdsTest extends TestCase

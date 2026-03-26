@@ -1,8 +1,8 @@
 <?php
 
-use App\Catalog\CatalogReloadCoordinator;
-use App\Catalog\CatalogReloadStatusPresenter;
 use App\Jobs\BeginCatalogReloadJob;
+use App\Services\Catalog\CatalogReloadCoordinator;
+use App\Services\Catalog\CatalogReloadStatusPresenter;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Bus;

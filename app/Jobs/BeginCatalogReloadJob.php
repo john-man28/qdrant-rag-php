@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace App\Jobs;
 
-use App\Catalog\CatalogReloadCoordinator;
-use App\Catalog\QdrantCatalogCollectionService;
+use App\Services\Catalog\CatalogReloadCoordinator;
+use App\Services\Catalog\QdrantCatalogCollectionService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -48,14 +48,10 @@ class BeginCatalogReloadJob implements ShouldBeUnique, ShouldQueue
 
         try {
             $qdrant->resetCollection();
-        } catch (Throwable $e) {
-            $coordinator->putStatus($this->runId, [
-                'phase' => 'failed',
-                'error' => $e->getMessage(),
-                'finished_at' => now()->toIso8601String(),
-            ]);
-            $coordinator->clearActiveRun();
-            throw $e;
+        } catch (Throwable $exception) {
+            $coordinator->markFailed($this->runId, $exception);
+
+            throw $exception;
         }
 
         $coordinator->putStatus($this->runId, [

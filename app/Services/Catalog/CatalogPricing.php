@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace App\Catalog;
+namespace App\Services\Catalog;
 
 final class CatalogPricing
 {

@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace App\Jobs;
 
-use App\Catalog\CatalogReloadCoordinator;
-use App\Catalog\CatalogVectorIndexService;
+use App\Services\Catalog\CatalogReloadCoordinator;
+use App\Services\Catalog\CatalogVectorIndexService;
 use Illuminate\Bus\Batchable;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
