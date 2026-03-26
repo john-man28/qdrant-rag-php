@@ -30,3 +30,6 @@ embeddings.py
 prepare.php
 tools.php
 /documents
+AGENTS.md
+/.agents
+boost.json
