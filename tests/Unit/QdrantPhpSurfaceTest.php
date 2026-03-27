@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 use Qdrant\Models\CreateCollectionRequest;
 use Qdrant\Models\Distance;
+use Qdrant\Models\Fusion;
+use Qdrant\Models\FusionQuery;
 use Qdrant\Models\HnswConfigDiff;
 use Qdrant\Models\Modifier;
 use Qdrant\Models\MultiVectorComparator;
@@ -94,6 +96,51 @@ it('serializes points with named dense sparse and late vectors', function () {
             'sku' => 'OSFHU-ITW',
         ],
     ]);
+});
+
+it('serializes query requests with list prefetches and a fusion final query', function () {
+    $request = new QueryRequest(
+        query: new FusionQuery(Fusion::RRF),
+        limit: 10,
+        withPayload: true,
+        prefetch: [
+            new Prefetch(
+                query: [0.9, 0.8, 0.7],
+                using: 'dense',
+                limit: 20,
+            ),
+            new Prefetch(
+                query: new SparseVector(indices: [2, 5], values: [0.6, 0.1]),
+                using: 'sparse',
+                limit: 20,
+            ),
+        ],
+    );
+
+    expect($request->toArray())->toBe([
+        'query' => [
+            'fusion' => 'rrf',
+        ],
+        'limit' => 10,
+        'with_payload' => true,
+        'with_vector' => false,
+        'prefetch' => [
+            [
+                'query' => [0.9, 0.8, 0.7],
+                'using' => 'dense',
+                'limit' => 20,
+            ],
+            [
+                'query' => [
+                    'indices' => [2, 5],
+                    'values' => [0.6, 0.1],
+                ],
+                'using' => 'sparse',
+                'limit' => 20,
+            ],
+        ],
+    ])
+        ->and(QueryRequest::fromArray($request->toArray())->toArray())->toBe($request->toArray());
 });
 
 it('serializes query requests with list prefetches and a late interaction final query', function () {

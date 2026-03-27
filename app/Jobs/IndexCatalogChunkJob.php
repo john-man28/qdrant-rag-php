@@ -40,13 +40,21 @@ class IndexCatalogChunkJob implements ShouldQueue
             return;
         }
 
+        $coordinator->putStatus($this->runId, [
+            'phase' => 'indexing',
+        ]);
+
         $base = $coordinator->runDirectory($this->runId);
         $path = $base.'/'.str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $this->chunkRelativePath);
 
         try {
             $indexer->indexChunkFile($path);
+            $coordinator->putStatus($this->runId, [
+                'phase' => 'indexing',
+            ]);
         } catch (Throwable $e) {
             $coordinator->putStatus($this->runId, [
+                'phase' => 'indexing',
                 'last_chunk_error' => $e->getMessage(),
             ]);
             throw $e;

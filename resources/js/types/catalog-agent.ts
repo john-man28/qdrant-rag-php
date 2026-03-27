@@ -59,6 +59,7 @@ export type CatalogReloadStatusPayload = {
     ok: boolean;
     run: CatalogReloadRunPayload | null;
     batch: CatalogReloadBatchPayload | null;
+    runtimeError: string | null;
 };
 
 export type ChatResponsePayload = {

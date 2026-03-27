@@ -74,6 +74,10 @@ final class QueryRequest implements Arrayable
             return RecommendQuery::fromArray($query);
         }
 
+        if (array_key_exists('fusion', $query)) {
+            return FusionQuery::fromArray($query);
+        }
+
         if (isset($query['indices'], $query['values'])) {
             return SparseVector::fromArray($query);
         }

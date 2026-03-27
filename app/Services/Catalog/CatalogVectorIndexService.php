@@ -128,21 +128,35 @@ final class CatalogVectorIndexService
             return null;
         }
 
-        if (! $this->collectionService->hybridEnabled()) {
+        $searchMode = $this->collectionService->searchMode();
+
+        if (! $searchMode->usesNamedVectors()) {
             return $denseVector;
         }
 
         $sparseVector = $encodedVectors['sparse'] ?? null;
-        $lateVector = $encodedVectors['late'] ?? null;
 
-        if (! $sparseVector instanceof SparseVector || ! is_array($lateVector)) {
+        if (! $sparseVector instanceof SparseVector) {
             return null;
         }
 
-        return [
+        $vector = [
             $this->collectionService->denseVectorName() => $denseVector,
             $this->collectionService->sparseVectorName() => $sparseVector,
-            $this->collectionService->lateVectorName() => $lateVector,
         ];
+
+        if (! $searchMode->usesLateInteraction()) {
+            return $vector;
+        }
+
+        $lateVector = $encodedVectors['late'] ?? null;
+
+        if (! is_array($lateVector)) {
+            return null;
+        }
+
+        $vector[$this->collectionService->lateVectorName()] = $lateVector;
+
+        return $vector;
     }
 }

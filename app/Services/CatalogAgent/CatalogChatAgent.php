@@ -6,6 +6,7 @@ namespace App\Services\CatalogAgent;
 
 use App\Services\Catalog\CatalogEmbeddingService;
 use App\Services\Catalog\CatalogLateInteractionEmbeddingService;
+use App\Services\Catalog\CatalogSearchMode;
 use App\Services\Catalog\CatalogSparseEmbeddingService;
 use App\Services\Catalog\CatalogVectorEncodingOrchestrator;
 use App\Services\Catalog\QdrantCatalogCollectionService;
@@ -17,13 +18,17 @@ use OpenAI\Responses\Chat\CreateResponseMessage;
 use OpenAI\Responses\Chat\CreateResponseToolCall;
 use Qdrant\Models\FieldCondition;
 use Qdrant\Models\Filter;
+use Qdrant\Models\Fusion;
+use Qdrant\Models\FusionQuery;
 use Qdrant\Models\NearestQuery;
 use Qdrant\Models\PointStruct;
 use Qdrant\Models\Prefetch;
+use Qdrant\Models\QueryResponse;
 use Qdrant\Models\RecommendInput;
 use Qdrant\Models\RecommendQuery;
 use Qdrant\Models\Record;
 use Qdrant\Models\ScoredPoint;
+use Qdrant\Models\SparseVector;
 use Qdrant\QdrantClient;
 use Throwable;
 
@@ -97,7 +102,7 @@ PROMPT;
             CatalogEmbeddingService::fromConfig(),
             CatalogSparseEmbeddingService::fromConfig(),
             CatalogLateInteractionEmbeddingService::fromConfig(),
-            $this->config->hybridEnabled,
+            $this->config->searchMode,
         );
         $this->collectionService = $collectionService ?? QdrantCatalogCollectionService::fromConfig();
         $this->openai = \OpenAI::factory()
@@ -267,13 +272,13 @@ PROMPT;
             );
         }
 
-        if (! $this->config->hybridEnabled) {
+        if (! $this->config->searchMode->usesNamedVectors()) {
             return;
         }
 
         try {
-            $this->vectorEncodings->assertHybridEncodersConfigured();
-            $this->collectionService->assertHybridCollectionSchema();
+            $this->vectorEncodings->assertSearchEncodersConfigured();
+            $this->collectionService->assertSearchCollectionSchema();
         } catch (Throwable $exception) {
             throw new AgentRuntimeException($exception->getMessage(), previous: $exception);
         }
@@ -692,40 +697,11 @@ PROMPT;
         }
 
         try {
-            if ($this->config->hybridEnabled) {
-                $queryVectors = $this->vectorEncodings->encodeSearchQuery(
-                    queryText: $queryText,
-                    denseQueryText: self::SEARCH_PREFIX.$queryText,
-                );
-
-                $response = $this->qdrant->queryPoints(
-                    collectionName: $this->config->qdrantCollection,
-                    query: $queryVectors['late'] ?? [],
-                    using: $this->collectionService->lateVectorName(),
-                    withPayload: true,
-                    limit: $this->expandedResultLimit($limit),
-                    prefetch: [
-                        new Prefetch(
-                            query: $queryVectors['dense'] ?? [],
-                            using: $this->collectionService->denseVectorName(),
-                            limit: $this->config->hybridPrefetchLimit,
-                        ),
-                        new Prefetch(
-                            query: $queryVectors['sparse'] ?? null,
-                            using: $this->collectionService->sparseVectorName(),
-                            limit: $this->config->hybridPrefetchLimit,
-                        ),
-                    ],
-                );
-            } else {
-                $embedding = $this->vectorEncodings->encodeSearchQuery(self::SEARCH_PREFIX.$queryText);
-                $response = $this->qdrant->queryPoints(
-                    collectionName: $this->config->qdrantCollection,
-                    query: new NearestQuery($embedding['dense'] ?? []),
-                    withPayload: true,
-                    limit: $this->expandedResultLimit($limit),
-                );
-            }
+            $response = match ($this->config->searchMode) {
+                CatalogSearchMode::Dense => $this->runDenseNearestQuery($queryText, $limit),
+                CatalogSearchMode::Hybrid => $this->runHybridNearestQuery($queryText, $limit),
+                CatalogSearchMode::HybridRerank => $this->runHybridRerankNearestQuery($queryText, $limit),
+            };
         } catch (Throwable $exception) {
             return ['error' => sprintf('Nearest search failed: %s', $exception->getMessage())];
         }
@@ -739,6 +715,71 @@ PROMPT;
             'tool' => 'nearestQuery',
             'hits' => $hits,
             'message' => $hits === [] ? 'No matches found.' : null,
+        ];
+    }
+
+    private function runDenseNearestQuery(string $queryText, int $limit): QueryResponse
+    {
+        $embedding = $this->vectorEncodings->encodeSearchQuery(self::SEARCH_PREFIX.$queryText);
+
+        return $this->qdrant->queryPoints(
+            collectionName: $this->config->qdrantCollection,
+            query: new NearestQuery($embedding['dense'] ?? []),
+            withPayload: true,
+            limit: $this->expandedResultLimit($limit),
+        );
+    }
+
+    private function runHybridNearestQuery(string $queryText, int $limit): QueryResponse
+    {
+        $queryVectors = $this->vectorEncodings->encodeSearchQuery(
+            queryText: $queryText,
+            denseQueryText: self::SEARCH_PREFIX.$queryText,
+        );
+
+        return $this->qdrant->queryPoints(
+            collectionName: $this->config->qdrantCollection,
+            query: new FusionQuery(Fusion::RRF),
+            withPayload: true,
+            limit: $this->expandedResultLimit($limit),
+            prefetch: $this->hybridPrefetches($queryVectors),
+        );
+    }
+
+    private function runHybridRerankNearestQuery(string $queryText, int $limit): QueryResponse
+    {
+        $queryVectors = $this->vectorEncodings->encodeSearchQuery(
+            queryText: $queryText,
+            denseQueryText: self::SEARCH_PREFIX.$queryText,
+        );
+
+        return $this->qdrant->queryPoints(
+            collectionName: $this->config->qdrantCollection,
+            query: $queryVectors['late'] ?? [],
+            using: $this->collectionService->lateVectorName(),
+            withPayload: true,
+            limit: $this->expandedResultLimit($limit),
+            prefetch: $this->hybridPrefetches($queryVectors),
+        );
+    }
+
+    /**
+     * @param  array{dense:list<float>,sparse:SparseVector,late?:list<list<float>>}  $queryVectors
+     * @return list<Prefetch>
+     */
+    private function hybridPrefetches(array $queryVectors): array
+    {
+        return [
+            new Prefetch(
+                query: $queryVectors['dense'] ?? [],
+                using: $this->collectionService->denseVectorName(),
+                limit: $this->config->hybridPrefetchLimit,
+            ),
+            new Prefetch(
+                query: $queryVectors['sparse'] ?? null,
+                using: $this->collectionService->sparseVectorName(),
+                limit: $this->config->hybridPrefetchLimit,
+            ),
         ];
     }
 

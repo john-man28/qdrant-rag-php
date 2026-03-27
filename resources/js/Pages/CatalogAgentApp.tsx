@@ -160,6 +160,7 @@ export default function CatalogAgentApp({
                 const phase = res.data.run?.phase as string | undefined;
                 const err = (res.data.run?.error as string | undefined) ?? null;
                 setReloadProgress(deriveReloadProgress(res.data));
+                setRuntimeError(res.data.runtimeError ?? null);
                 if (phase === 'completed' || phase === 'failed') {
                     if (reloadPollRef.current !== null) {
                         clearInterval(reloadPollRef.current);
@@ -241,7 +242,7 @@ export default function CatalogAgentApp({
         bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
     }, [conversation]);
 
-    const disableComposer = isSending || runtimeError !== null;
+    const disableComposer = isSending || reloadBusy || runtimeError !== null;
 
     async function submitMessage(messageOverride?: string): Promise<void> {
         const message = (messageOverride ?? draft).trim();
@@ -277,7 +278,7 @@ export default function CatalogAgentApp({
     }
 
     async function startCatalogReload(): Promise<void> {
-        if (reloadBusy || runtimeError !== null) {
+        if (reloadBusy) {
             return;
         }
         setReloadBusy(true);
@@ -287,6 +288,7 @@ export default function CatalogAgentApp({
                 ok: true,
                 run: null,
                 batch: null,
+                runtimeError: runtimeError,
             }),
         );
         if (reloadPollRef.current !== null) {
@@ -297,7 +299,27 @@ export default function CatalogAgentApp({
             const start = await axios.post<{ run_id: string }>(reloadStartEndpoint, {});
             const runId = start.data.run_id;
             setupReloadPolling(runId);
-        } catch {
+        } catch (error) {
+            const response = (
+                error as {
+                    response?: {
+                        status?: number;
+                        data?: {
+                            run_id?: string;
+                            error?: string;
+                        };
+                    };
+                }
+            ).response;
+
+            const existingRunId = response?.data?.run_id;
+
+            if (response?.status === 409 && typeof existingRunId === 'string' && existingRunId !== '') {
+                setReloadHint(response.data?.error ?? 'A catalog reload is already in progress.');
+                setupReloadPolling(existingRunId);
+                return;
+            }
+
             setReloadBusy(false);
             setReloadProgress(null);
             sessionStorage.removeItem(RELOAD_RUN_STORAGE_KEY);
@@ -351,7 +373,7 @@ export default function CatalogAgentApp({
                                     <button
                                         type="button"
                                         onClick={() => void startCatalogReload()}
-                                        disabled={reloadBusy || runtimeError !== null}
+                                        disabled={reloadBusy}
                                         className="inline-flex items-center justify-center gap-2 rounded-full border border-amber-900/25 bg-amber-100/90 px-4 py-2 text-sm font-medium text-amber-950 transition hover:border-amber-900/35 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-60"
                                     >
                                         {reloadBusy ? <LoaderIcon /> : <SignalIcon />}

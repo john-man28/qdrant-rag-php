@@ -5,7 +5,11 @@ declare(strict_types=1);
 namespace App\Services\Catalog;
 
 use App\Jobs\BeginCatalogReloadJob;
+use Carbon\CarbonInterface;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Throwable;
 
@@ -26,6 +30,11 @@ final class CatalogReloadCoordinator
             $this->lockTtlSeconds(),
         )->block($this->lockWaitSeconds(), function (): array {
             $activeRunId = $this->activeRunId();
+            if ($activeRunId !== null && $this->activeRunIsStale($activeRunId)) {
+                $this->clearActiveRun();
+                $activeRunId = null;
+            }
+
             if ($activeRunId !== null) {
                 return [
                     'started' => false,
@@ -35,6 +44,15 @@ final class CatalogReloadCoordinator
 
             $runId = (string) Str::uuid();
             $this->setActiveRun($runId);
+            $this->rememberLatestRunId($runId);
+            $this->putStatus($runId, [
+                'phase' => 'queued',
+                'batch_id' => null,
+                'error' => null,
+                'queued_at' => now()->toIso8601String(),
+                'started_at' => null,
+                'finished_at' => null,
+            ]);
             BeginCatalogReloadJob::dispatch($runId);
 
             return [
@@ -54,7 +72,9 @@ final class CatalogReloadCoordinator
         if (! is_array($existing)) {
             $existing = [];
         }
-        Cache::put($key, array_merge($existing, $extra), $this->statusTtlSeconds());
+        Cache::put($key, array_merge($existing, $extra, [
+            'last_activity_at' => now()->toIso8601String(),
+        ]), $this->statusTtlSeconds());
     }
 
     /**
@@ -154,6 +174,72 @@ final class CatalogReloadCoordinator
     private function statusTtlSeconds(): int
     {
         return max(1, (int) config('catalog.reload.status_ttl_seconds', 86400));
+    }
+
+    private function activeRunIsStale(string $runId): bool
+    {
+        $status = $this->getStatus($runId);
+        if ($status === null) {
+            return $this->queueIsIdle();
+        }
+
+        $phase = is_string($status['phase'] ?? null) ? $status['phase'] : null;
+        if (in_array($phase, ['completed', 'failed'], true)) {
+            return true;
+        }
+
+        $batchId = is_string($status['batch_id'] ?? null) ? $status['batch_id'] : null;
+        if ($batchId !== null) {
+            $batch = Bus::findBatch($batchId);
+
+            if ($batch === null || $batch->finished() || $batch->cancelled()) {
+                return true;
+            }
+
+            if ($phase === 'indexing' && $batch->pendingJobs > 0 && $this->queueIsIdle()) {
+                return true;
+            }
+        }
+
+        $lastActivityAt = $this->lastActivityAt($status);
+
+        if ($lastActivityAt === null) {
+            return $this->queueIsIdle();
+        }
+
+        return $this->queueIsIdle() && $lastActivityAt->diffInSeconds(now()) >= $this->staleAfterSeconds();
+    }
+
+    /**
+     * @param  array<string, mixed>  $status
+     */
+    private function lastActivityAt(array $status): ?CarbonInterface
+    {
+        foreach ([
+            'last_activity_at',
+            'batch_finished_at',
+            'finished_at',
+            'started_at',
+            'queued_at',
+        ] as $field) {
+            $value = $status[$field] ?? null;
+
+            if (is_string($value) && trim($value) !== '') {
+                return Carbon::parse($value);
+            }
+        }
+
+        return null;
+    }
+
+    private function queueIsIdle(): bool
+    {
+        return Queue::size() === 0;
+    }
+
+    private function staleAfterSeconds(): int
+    {
+        return max(60, (int) config('catalog.reload.stale_after_seconds', 900));
     }
 
     private function lockTtlSeconds(): int

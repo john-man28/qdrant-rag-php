@@ -24,7 +24,7 @@ final class QdrantCatalogCollectionService implements CatalogPointUploader
         private readonly int $timeoutSeconds,
         private readonly int $denseVectorSize,
         private readonly ?int $lateVectorSize,
-        private readonly bool $hybridEnabled,
+        private readonly CatalogSearchMode $searchMode,
         private readonly string $denseVectorName,
         private readonly string $sparseVectorName,
         private readonly string $lateVectorName,
@@ -41,7 +41,10 @@ final class QdrantCatalogCollectionService implements CatalogPointUploader
             lateVectorSize: filled(config('services.qdrant.late_vector_size'))
                 ? (int) config('services.qdrant.late_vector_size')
                 : null,
-            hybridEnabled: (bool) config('catalog.search.hybrid_enabled', false),
+            searchMode: CatalogSearchMode::fromConfig(
+                config('catalog.search.mode'),
+                (bool) config('catalog.search.hybrid_enabled', false),
+            ),
             denseVectorName: (string) config('services.qdrant.dense_vector_name', 'dense'),
             sparseVectorName: (string) config('services.qdrant.sparse_vector_name', 'sparse'),
             lateVectorName: (string) config('services.qdrant.late_vector_name', 'late'),
@@ -84,9 +87,9 @@ final class QdrantCatalogCollectionService implements CatalogPointUploader
         return $this->makeClient()->collectionExists($this->collectionName);
     }
 
-    public function hybridEnabled(): bool
+    public function searchMode(): CatalogSearchMode
     {
-        return $this->hybridEnabled;
+        return $this->searchMode;
     }
 
     public function denseVectorName(): string
@@ -122,16 +125,83 @@ final class QdrantCatalogCollectionService implements CatalogPointUploader
 
     public function createCollectionRequest(): CreateCollectionRequest
     {
-        if (! $this->hybridEnabled) {
-            return new CreateCollectionRequest(
+        return match ($this->searchMode) {
+            CatalogSearchMode::Dense => new CreateCollectionRequest(
                 vectors: new VectorParams(
                     size: $this->denseVectorSize,
                     distance: Distance::COSINE,
                 ),
-            );
+            ),
+            CatalogSearchMode::Hybrid => $this->hybridCollectionRequest(),
+            CatalogSearchMode::HybridRerank => $this->hybridRerankCollectionRequest(),
+        };
+    }
+
+    public function assertSearchCollectionSchema(): void
+    {
+        if (! $this->searchMode->usesNamedVectors()) {
+            return;
         }
 
-        $this->assertHybridQdrantConfig();
+        $this->assertSearchQdrantConfig();
+
+        $result = $this->collectionDetails();
+        $vectors = data_get($result, 'config.params.vectors');
+        $sparseVectors = data_get($result, 'config.params.sparse_vectors');
+
+        if (! is_array($vectors) || isset($vectors['size']) || ! is_array($sparseVectors)) {
+            throw new RuntimeException($this->modeRuntimeError('the Qdrant collection is still using the old dense-only schema.'));
+        }
+
+        $denseVector = $vectors[$this->denseVectorName] ?? null;
+        $sparseVector = $sparseVectors[$this->sparseVectorName] ?? null;
+
+        if (! is_array($denseVector) || (int) ($denseVector['size'] ?? 0) !== $this->denseVectorSize) {
+            throw new RuntimeException($this->modeRuntimeError('the dense vector config does not match the configured schema.'));
+        }
+
+        if ((string) data_get($sparseVector, 'modifier') !== $this->sparseModifier->value) {
+            throw new RuntimeException($this->modeRuntimeError('the sparse vector config does not match the configured schema.'));
+        }
+
+        if (! $this->searchMode->usesLateInteraction()) {
+            return;
+        }
+
+        $lateVector = $vectors[$this->lateVectorName] ?? null;
+
+        if (
+            ! is_array($lateVector)
+            || (int) ($lateVector['size'] ?? 0) !== $this->lateVectorSize
+            || (string) data_get($lateVector, 'multivector_config.comparator') !== MultiVectorComparator::MAX_SIM->value
+            || (int) data_get($lateVector, 'hnsw_config.m', -1) !== 0
+        ) {
+            throw new RuntimeException($this->modeRuntimeError('the late-interaction vector config does not match the configured schema.'));
+        }
+    }
+
+    private function hybridCollectionRequest(): CreateCollectionRequest
+    {
+        $this->assertSearchQdrantConfig();
+
+        return new CreateCollectionRequest(
+            vectors: [
+                $this->denseVectorName => new VectorParams(
+                    size: $this->denseVectorSize,
+                    distance: Distance::COSINE,
+                ),
+            ],
+            sparseVectors: [
+                $this->sparseVectorName => new SparseVectorParams(
+                    modifier: $this->sparseModifier,
+                ),
+            ],
+        );
+    }
+
+    private function hybridRerankCollectionRequest(): CreateCollectionRequest
+    {
+        $this->assertSearchQdrantConfig();
 
         return new CreateCollectionRequest(
             vectors: [
@@ -154,44 +224,6 @@ final class QdrantCatalogCollectionService implements CatalogPointUploader
         );
     }
 
-    public function assertHybridCollectionSchema(): void
-    {
-        if (! $this->hybridEnabled) {
-            return;
-        }
-
-        $this->assertHybridQdrantConfig();
-
-        $result = $this->collectionDetails();
-        $vectors = data_get($result, 'config.params.vectors');
-        $sparseVectors = data_get($result, 'config.params.sparse_vectors');
-
-        if (! is_array($vectors) || isset($vectors['size']) || ! is_array($sparseVectors)) {
-            throw new RuntimeException($this->hybridRuntimeError('the Qdrant collection is still using the old dense-only schema.'));
-        }
-
-        $denseVector = $vectors[$this->denseVectorName] ?? null;
-        $lateVector = $vectors[$this->lateVectorName] ?? null;
-        $sparseVector = $sparseVectors[$this->sparseVectorName] ?? null;
-
-        if (! is_array($denseVector) || (int) ($denseVector['size'] ?? 0) !== $this->denseVectorSize) {
-            throw new RuntimeException($this->hybridRuntimeError('the dense vector config does not match the hybrid schema.'));
-        }
-
-        if (
-            ! is_array($lateVector)
-            || (int) ($lateVector['size'] ?? 0) !== $this->lateVectorSize
-            || (string) data_get($lateVector, 'multivector_config.comparator') !== MultiVectorComparator::MAX_SIM->value
-            || (int) data_get($lateVector, 'hnsw_config.m', -1) !== 0
-        ) {
-            throw new RuntimeException($this->hybridRuntimeError('the late-interaction vector config does not match the hybrid schema.'));
-        }
-
-        if ((string) data_get($sparseVector, 'modifier') !== $this->sparseModifier->value) {
-            throw new RuntimeException($this->hybridRuntimeError('the sparse vector config does not match the hybrid schema.'));
-        }
-    }
-
     /**
      * @return array<string, mixed>
      */
@@ -211,31 +243,37 @@ final class QdrantCatalogCollectionService implements CatalogPointUploader
         return $result;
     }
 
-    private function assertHybridQdrantConfig(): void
+    private function assertSearchQdrantConfig(): void
     {
         if ($this->denseVectorSize < 1) {
-            throw new RuntimeException($this->hybridRuntimeError('the dense vector size is missing or invalid.'));
+            throw new RuntimeException($this->modeRuntimeError('the dense vector size is missing or invalid.'));
         }
 
-        if (($this->lateVectorSize ?? 0) < 1) {
-            throw new RuntimeException($this->hybridRuntimeError('the late-interaction vector size is missing or invalid.'));
-        }
-
-        foreach ([
+        $requiredNames = [
             $this->denseVectorName,
             $this->sparseVectorName,
-            $this->lateVectorName,
-        ] as $name) {
+        ];
+
+        if ($this->searchMode->usesLateInteraction()) {
+            if (($this->lateVectorSize ?? 0) < 1) {
+                throw new RuntimeException($this->modeRuntimeError('the late-interaction vector size is missing or invalid.'));
+            }
+
+            $requiredNames[] = $this->lateVectorName;
+        }
+
+        foreach ($requiredNames as $name) {
             if (trim($name) === '') {
-                throw new RuntimeException($this->hybridRuntimeError('one or more Qdrant vector names are missing.'));
+                throw new RuntimeException($this->modeRuntimeError('one or more Qdrant vector names are missing.'));
             }
         }
     }
 
-    private function hybridRuntimeError(string $reason): string
+    private function modeRuntimeError(string $reason): string
     {
         return sprintf(
-            'Hybrid catalog search is enabled, but %s Rebuild the Qdrant collection and fully reindex the catalog.',
+            'Catalog search mode [%s] is enabled, but %s Rebuild the Qdrant collection and fully reindex the catalog.',
+            $this->searchMode->value,
             $reason,
         );
     }

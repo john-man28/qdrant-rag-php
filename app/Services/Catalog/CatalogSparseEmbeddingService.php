@@ -89,17 +89,69 @@ final class CatalogSparseEmbeddingService implements CatalogSparseEncoder
                 throw new RuntimeException('Sparse embedding response item was not an object.');
             }
 
-            $vectorPayload = isset($item['embedding']) && is_array($item['embedding'])
-                ? $item['embedding']
-                : $item;
-
-            if (! is_array($vectorPayload) || ! isset($vectorPayload['indices'], $vectorPayload['values'])) {
-                throw new RuntimeException('Sparse embedding response item did not include indices and values.');
-            }
+            $vectorPayload = $this->extractSparseVectorPayload($item);
 
             $vectors[] = SparseVector::fromArray($vectorPayload);
         }
 
         return $vectors;
+    }
+
+    /**
+     * @param  array<string, mixed>  $item
+     * @return array{indices:list<int>,values:list<float|int>}
+     */
+    private function extractSparseVectorPayload(array $item): array
+    {
+        $denseVectorDetected = false;
+
+        foreach ([
+            $item['sparse_embedding'] ?? null,
+            $item['sparse'] ?? null,
+            $item['embedding'] ?? null,
+            $item,
+        ] as $candidate) {
+            if (! is_array($candidate)) {
+                continue;
+            }
+
+            if (isset($candidate['indices'], $candidate['values'])) {
+                return $candidate;
+            }
+
+            if ($this->isDenseVectorPayload($candidate)) {
+                $denseVectorDetected = true;
+            }
+        }
+
+        if ($denseVectorDetected) {
+            throw new RuntimeException(sprintf(
+                'Sparse embedding model [%s] via %s returned a dense embedding vector. '
+                .'Configure services.sparse_embedding.model to a sparse-capable model that returns indices and values, '
+                .'or disable hybrid search.',
+                $this->model,
+                $this->baseUrl,
+            ));
+        }
+
+        throw new RuntimeException('Sparse embedding response item did not include indices and values.');
+    }
+
+    /**
+     * @param  array<int, mixed>  $payload
+     */
+    private function isDenseVectorPayload(array $payload): bool
+    {
+        if (! array_is_list($payload)) {
+            return false;
+        }
+
+        foreach ($payload as $value) {
+            if (! is_int($value) && ! is_float($value)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 }

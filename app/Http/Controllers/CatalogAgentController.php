@@ -73,6 +73,7 @@ class CatalogAgentController extends Controller
     public function catalogReloadStatus(
         CatalogReloadStatusRequest $request,
         CatalogReloadCoordinator $coordinator,
+        CatalogChatAgent $agent,
     ): JsonResponse {
         $status = CatalogReloadStatusPresenter::enrich($coordinator->getStatus($request->runId()));
 
@@ -80,6 +81,7 @@ class CatalogAgentController extends Controller
             'ok' => true,
             'run' => $status,
             'batch' => $this->batchPayload($status),
+            'runtimeError' => $agent->runtimeError(),
         ]);
     }
 

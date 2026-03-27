@@ -34,6 +34,7 @@ final class CatalogReloadStatusPresenter
         $step = isset($status['export_step']) && is_string($status['export_step']) ? $status['export_step'] : null;
 
         return match ($phase) {
+            'queued' => 'Catalog reload queued',
             'reset_qdrant' => 'Resetting vector collection',
             'export' => match ($step) {
                 'categories' => 'Fetching categories',

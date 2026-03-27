@@ -13,31 +13,37 @@ final class CatalogVectorEncodingOrchestrator
         private readonly CatalogDenseEncoder $denseEncoder,
         private readonly CatalogSparseEncoder $sparseEncoder,
         private readonly CatalogLateInteractionEncoder $lateEncoder,
-        private readonly bool $hybridEnabled,
+        private readonly CatalogSearchMode $searchMode,
     ) {}
 
-    public function hybridEnabled(): bool
+    public function searchMode(): CatalogSearchMode
     {
-        return $this->hybridEnabled;
+        return $this->searchMode;
     }
 
-    public function assertHybridEncodersConfigured(): void
+    public function assertSearchEncodersConfigured(): void
     {
-        if (! $this->hybridEnabled) {
+        if (! $this->searchMode->usesSparseVectors()) {
             return;
         }
 
         if (! $this->sparseEncoder->configured()) {
             throw new RuntimeException(
-                'Hybrid catalog search is enabled, but the sparse model config is missing. '
+                sprintf(
+                    'Catalog search mode [%s] is enabled, but the sparse model config is missing. ',
+                    $this->searchMode->value,
+                )
                 .'Configure services.sparse_embedding.base_url, api_key, model, and timeout, '
                 .'then rebuild the Qdrant collection and fully reindex the catalog.'
             );
         }
 
-        if (! $this->lateEncoder->configured()) {
+        if ($this->searchMode->usesLateInteraction() && ! $this->lateEncoder->configured()) {
             throw new RuntimeException(
-                'Hybrid catalog search is enabled, but the late-interaction model config is missing. '
+                sprintf(
+                    'Catalog search mode [%s] is enabled, but the late-interaction model config is missing. ',
+                    $this->searchMode->value,
+                )
                 .'Configure services.late_interaction.base_url, api_key, model, and timeout, '
                 .'then rebuild the Qdrant collection and fully reindex the catalog.'
             );
@@ -56,27 +62,34 @@ final class CatalogVectorEncodingOrchestrator
 
         $denseVectors = $this->denseEncoder->embedBatch($texts);
 
-        if (! $this->hybridEnabled) {
+        if (! $this->searchMode->usesSparseVectors()) {
             return array_map(
                 static fn (array $denseVector): array => ['dense' => $denseVector],
                 $denseVectors,
             );
         }
 
-        $this->assertHybridEncodersConfigured();
+        $this->assertSearchEncodersConfigured();
 
         $sparseVectors = $this->sparseEncoder->embedBatch($texts);
-        $lateVectors = $this->lateEncoder->embedBatch($texts);
+        $lateVectors = $this->searchMode->usesLateInteraction()
+            ? $this->lateEncoder->embedBatch($texts)
+            : null;
 
         $this->assertBatchCounts($texts, $denseVectors, $sparseVectors, $lateVectors);
 
         $encoded = [];
         foreach ($texts as $index => $_text) {
-            $encoded[] = [
+            $item = [
                 'dense' => $denseVectors[$index],
                 'sparse' => $sparseVectors[$index],
-                'late' => $lateVectors[$index],
             ];
+
+            if ($this->searchMode->usesLateInteraction()) {
+                $item['late'] = $lateVectors[$index];
+            }
+
+            $encoded[] = $item;
         }
 
         return $encoded;
@@ -90,42 +103,48 @@ final class CatalogVectorEncodingOrchestrator
         $denseVectors = $this->denseEncoder->embedBatch([$denseQueryText ?? $queryText]);
         $denseVector = $denseVectors[0] ?? [];
 
-        if (! $this->hybridEnabled) {
+        if (! $this->searchMode->usesSparseVectors()) {
             return ['dense' => $denseVector];
         }
 
-        $this->assertHybridEncodersConfigured();
+        $this->assertSearchEncodersConfigured();
 
         $sparseVector = $this->sparseEncoder->embedBatch([$queryText])[0] ?? new SparseVector([], []);
-        $lateVector = $this->lateEncoder->embedBatch([$queryText])[0] ?? [];
-
-        return [
+        $encoded = [
             'dense' => $denseVector,
             'sparse' => $sparseVector,
-            'late' => $lateVector,
         ];
+
+        if ($this->searchMode->usesLateInteraction()) {
+            $encoded['late'] = $this->lateEncoder->embedBatch([$queryText])[0] ?? [];
+        }
+
+        return $encoded;
     }
 
     /**
      * @param  list<string>  $texts
      * @param  list<list<float>>  $denseVectors
      * @param  list<SparseVector>  $sparseVectors
-     * @param  list<list<list<float>>>  $lateVectors
+     * @param  list<list<list<float>>>|null  $lateVectors
      */
     private function assertBatchCounts(
         array $texts,
         array $denseVectors,
         array $sparseVectors,
-        array $lateVectors,
+        ?array $lateVectors,
     ): void {
         $expectedCount = count($texts);
 
         if (
             count($denseVectors) !== $expectedCount
             || count($sparseVectors) !== $expectedCount
-            || count($lateVectors) !== $expectedCount
+            || ($this->searchMode->usesLateInteraction() && count($lateVectors ?? []) !== $expectedCount)
         ) {
-            throw new RuntimeException('The embedding services returned mismatched batch sizes for hybrid catalog encoding.');
+            throw new RuntimeException(sprintf(
+                'The embedding services returned mismatched batch sizes for catalog search mode [%s].',
+                $this->searchMode->value,
+            ));
         }
     }
 }

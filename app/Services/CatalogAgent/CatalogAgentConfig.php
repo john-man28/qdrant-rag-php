@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Services\CatalogAgent;
 
+use App\Services\Catalog\CatalogSearchMode;
+
 final readonly class CatalogAgentConfig
 {
     public function __construct(
@@ -16,7 +18,7 @@ final readonly class CatalogAgentConfig
         public string $qdrantCollection,
         public int $qdrantTimeout,
         public int $chatTopK,
-        public bool $hybridEnabled,
+        public CatalogSearchMode $searchMode,
         public int $hybridPrefetchLimit,
     ) {}
 
@@ -32,7 +34,10 @@ final readonly class CatalogAgentConfig
             qdrantCollection: (string) config('services.qdrant.collection', 'catalog'),
             qdrantTimeout: (int) config('services.qdrant.timeout', 60),
             chatTopK: (int) config('catalog.agent.chat_top_k', 10),
-            hybridEnabled: (bool) config('catalog.search.hybrid_enabled', false),
+            searchMode: CatalogSearchMode::fromConfig(
+                config('catalog.search.mode'),
+                (bool) config('catalog.search.hybrid_enabled', false),
+            ),
             hybridPrefetchLimit: max(1, (int) config('catalog.search.hybrid_prefetch_limit', 20)),
         );
     }

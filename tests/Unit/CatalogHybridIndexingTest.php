@@ -5,14 +5,17 @@ declare(strict_types=1);
 use App\Services\Catalog\CatalogDenseEncoder;
 use App\Services\Catalog\CatalogLateInteractionEncoder;
 use App\Services\Catalog\CatalogPointUploader;
+use App\Services\Catalog\CatalogSearchMode;
 use App\Services\Catalog\CatalogSparseEncoder;
 use App\Services\Catalog\CatalogVectorEncodingOrchestrator;
 use App\Services\Catalog\CatalogVectorIndexService;
 use App\Services\Catalog\QdrantCatalogCollectionService;
+use Illuminate\Support\Facades\Http;
 use Qdrant\Models\PointStruct;
 use Qdrant\Models\SparseVector;
 
 beforeEach(function () {
+    config()->set('catalog.search.mode', CatalogSearchMode::HybridRerank->value);
     config()->set('catalog.search.hybrid_enabled', true);
     config()->set('services.qdrant.url', 'http://qdrant.test');
     config()->set('services.qdrant.collection', 'catalog');
@@ -25,7 +28,7 @@ beforeEach(function () {
     config()->set('services.qdrant.sparse_modifier', 'idf');
 });
 
-it('invokes all three encoders for hybrid document encoding', function () {
+it('invokes dense and sparse encoders without late rerank vectors in hybrid mode', function () {
     $calls = (object) ['dense' => 0, 'sparse' => 0, 'late' => 0];
 
     $orchestrator = new CatalogVectorEncodingOrchestrator(
@@ -77,7 +80,76 @@ it('invokes all three encoders for hybrid document encoding', function () {
                 return [[[0.4, 0.5], [0.6, 0.7]]];
             }
         },
-        true,
+        CatalogSearchMode::Hybrid,
+    );
+
+    $encoded = $orchestrator->encodeDocuments(['warehouse sensor']);
+
+    expect($calls->dense)->toBe(1)
+        ->and($calls->sparse)->toBe(1)
+        ->and($calls->late)->toBe(0)
+        ->and($encoded)->toHaveCount(1)
+        ->and($encoded[0]['dense'])->toBe([0.1, 0.2, 0.3])
+        ->and($encoded[0]['sparse']->toArray())->toBe([
+            'indices' => [1, 4],
+            'values' => [0.7, 0.2],
+        ])
+        ->and($encoded[0])->not->toHaveKey('late');
+});
+
+it('invokes all three encoders for hybrid rerank document encoding', function () {
+    $calls = (object) ['dense' => 0, 'sparse' => 0, 'late' => 0];
+
+    $orchestrator = new CatalogVectorEncodingOrchestrator(
+        new class($calls) implements CatalogDenseEncoder
+        {
+            public function __construct(private readonly object $calls) {}
+
+            public function configured(): bool
+            {
+                return true;
+            }
+
+            public function embedBatch(array $texts): array
+            {
+                $this->calls->dense++;
+
+                return [[0.1, 0.2, 0.3]];
+            }
+        },
+        new class($calls) implements CatalogSparseEncoder
+        {
+            public function __construct(private readonly object $calls) {}
+
+            public function configured(): bool
+            {
+                return true;
+            }
+
+            public function embedBatch(array $texts): array
+            {
+                $this->calls->sparse++;
+
+                return [new SparseVector(indices: [1, 4], values: [0.7, 0.2])];
+            }
+        },
+        new class($calls) implements CatalogLateInteractionEncoder
+        {
+            public function __construct(private readonly object $calls) {}
+
+            public function configured(): bool
+            {
+                return true;
+            }
+
+            public function embedBatch(array $texts): array
+            {
+                $this->calls->late++;
+
+                return [[[0.4, 0.5], [0.6, 0.7]]];
+            }
+        },
+        CatalogSearchMode::HybridRerank,
     );
 
     $encoded = $orchestrator->encodeDocuments(['warehouse sensor']);
@@ -97,7 +169,9 @@ it('invokes all three encoders for hybrid document encoding', function () {
         ]);
 });
 
-it('uploads named dense sparse and late vectors when hybrid indexing is enabled', function () {
+it('uploads named dense and sparse vectors when hybrid indexing is enabled', function () {
+    config()->set('catalog.search.mode', CatalogSearchMode::Hybrid->value);
+
     $collectionService = QdrantCatalogCollectionService::fromConfig();
     $capturedUploader = new class implements CatalogPointUploader
     {
@@ -150,7 +224,7 @@ it('uploads named dense sparse and late vectors when hybrid indexing is enabled'
                     return [[[0.4, 0.5], [0.6, 0.7]]];
                 }
             },
-            true,
+            CatalogSearchMode::Hybrid,
         ),
         $collectionService,
         $capturedUploader,
@@ -184,14 +258,12 @@ it('uploads named dense sparse and late vectors when hybrid indexing is enabled'
             'indices' => [3, 9],
             'values' => [0.9, 0.4],
         ],
-        'late' => [
-            [0.4, 0.5],
-            [0.6, 0.7],
-        ],
     ]);
 });
 
-it('builds the hybrid collection schema on reset', function () {
+it('builds and validates the hybrid collection schema without late vectors', function () {
+    config()->set('catalog.search.mode', CatalogSearchMode::Hybrid->value);
+
     $request = QdrantCatalogCollectionService::fromConfig()->createCollectionRequest();
 
     expect($request->toArray())->toBe([
@@ -200,16 +272,6 @@ it('builds the hybrid collection schema on reset', function () {
                 'size' => 3,
                 'distance' => 'Cosine',
             ],
-            'late' => [
-                'size' => 2,
-                'distance' => 'Cosine',
-                'multivector_config' => [
-                    'comparator' => 'max_sim',
-                ],
-                'hnsw_config' => [
-                    'm' => 0,
-                ],
-            ],
         ],
         'sparse_vectors' => [
             'sparse' => [
@@ -217,4 +279,29 @@ it('builds the hybrid collection schema on reset', function () {
             ],
         ],
     ]);
+
+    Http::fake([
+        'http://qdrant.test/collections/catalog' => Http::response([
+            'result' => [
+                'config' => [
+                    'params' => [
+                        'vectors' => [
+                            'dense' => [
+                                'size' => 3,
+                                'distance' => 'Cosine',
+                            ],
+                        ],
+                        'sparse_vectors' => [
+                            'sparse' => [
+                                'modifier' => 'idf',
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ]),
+    ]);
+
+    expect(fn () => QdrantCatalogCollectionService::fromConfig()->assertSearchCollectionSchema())
+        ->not->toThrow(RuntimeException::class);
 });
