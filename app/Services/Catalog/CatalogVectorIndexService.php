@@ -7,13 +7,14 @@ namespace App\Services\Catalog;
 use App\Services\CatalogAgent\CatalogIds;
 use InvalidArgumentException;
 use Qdrant\Models\PointStruct;
-use Qdrant\QdrantClient;
+use Qdrant\Models\SparseVector;
 
 final class CatalogVectorIndexService
 {
     public function __construct(
-        private readonly CatalogEmbeddingService $embeddings,
+        private readonly CatalogVectorEncodingOrchestrator $vectorEncodings,
         private readonly QdrantCatalogCollectionService $collectionService,
+        private readonly CatalogPointUploader $pointUploader,
     ) {}
 
     /**
@@ -24,9 +25,6 @@ final class CatalogVectorIndexService
         if (! is_readable($absolutePath)) {
             throw new InvalidArgumentException("Chunk file not readable: {$absolutePath}");
         }
-
-        $collection = $this->collectionService->collectionName();
-        $client = $this->collectionService->makeClient();
 
         $embedBatch = max(1, (int) config('catalog.reload.embed_batch_size', 64));
         $uploadBatch = max(1, (int) config('catalog.reload.qdrant_upload_batch_size', 64));
@@ -51,13 +49,13 @@ final class CatalogVectorIndexService
                 $recordBuffer[] = $decoded;
 
                 if (count($recordBuffer) >= $embedBatch) {
-                    $this->embedAndUploadRecords($client, $collection, $recordBuffer, $uploadBatch);
+                    $this->embedAndUploadRecords($recordBuffer, $uploadBatch);
                     $recordBuffer = [];
                 }
             }
 
             if ($recordBuffer !== []) {
-                $this->embedAndUploadRecords($client, $collection, $recordBuffer, $uploadBatch);
+                $this->embedAndUploadRecords($recordBuffer, $uploadBatch);
             }
         } finally {
             fclose($handle);
@@ -68,8 +66,6 @@ final class CatalogVectorIndexService
      * @param  list<array<string, mixed>>  $records
      */
     private function embedAndUploadRecords(
-        QdrantClient $client,
-        string $collection,
         array $records,
         int $uploadBatch
     ): void {
@@ -78,7 +74,7 @@ final class CatalogVectorIndexService
             $texts[] = is_string($record['text'] ?? null) ? $record['text'] : '';
         }
 
-        $vectors = $this->embeddings->embedBatch($texts);
+        $vectors = $this->vectorEncodings->encodeDocuments($texts);
 
         $points = [];
         foreach ($records as $i => $record) {
@@ -90,8 +86,8 @@ final class CatalogVectorIndexService
             if (! is_string($sku) || $sku === '') {
                 continue;
             }
-            $vec = $vectors[$i] ?? null;
-            if (! is_array($vec)) {
+            $vec = $this->pointVector($vectors[$i] ?? null);
+            if ($vec === null) {
                 continue;
             }
             $fullPayload = $payload;
@@ -113,13 +109,40 @@ final class CatalogVectorIndexService
             if ($chunk === []) {
                 continue;
             }
-            $client->uploadPoints(
-                collectionName: $collection,
-                points: $chunk,
-                batchSize: $uploadBatch,
-                parallel: 1,
-                wait: false,
-            );
+            $this->pointUploader->uploadPoints($chunk, $uploadBatch, false);
         }
+    }
+
+    /**
+     * @param  array{dense:list<float>,sparse?:SparseVector,late?:list<list<float>>}|mixed  $encodedVectors
+     * @return list<float>|array<string, list<float>|list<list<float>>|SparseVector>|null
+     */
+    private function pointVector(mixed $encodedVectors): ?array
+    {
+        if (! is_array($encodedVectors)) {
+            return null;
+        }
+
+        $denseVector = $encodedVectors['dense'] ?? null;
+        if (! is_array($denseVector)) {
+            return null;
+        }
+
+        if (! $this->collectionService->hybridEnabled()) {
+            return $denseVector;
+        }
+
+        $sparseVector = $encodedVectors['sparse'] ?? null;
+        $lateVector = $encodedVectors['late'] ?? null;
+
+        if (! $sparseVector instanceof SparseVector || ! is_array($lateVector)) {
+            return null;
+        }
+
+        return [
+            $this->collectionService->denseVectorName() => $denseVector,
+            $this->collectionService->sparseVectorName() => $sparseVector,
+            $this->collectionService->lateVectorName() => $lateVector,
+        ];
     }
 }

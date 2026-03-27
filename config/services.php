@@ -43,11 +43,38 @@ return [
         'timeout' => (int) env('OPENAI_TIMEOUT', 60),
     ],
 
+    'dense_embedding' => [
+        'api_key' => env('DENSE_EMBEDDING_API_KEY', env('OPENAI_API_KEY', 'lm-studio')),
+        'base_url' => env('DENSE_EMBEDDING_BASE_URL', env('OPENAI_BASE_URL', 'http://localhost:1234/v1')),
+        'model' => env('DENSE_EMBEDDING_MODEL', env('EMBEDDING_MODEL', 'text-embedding-mxbai-embed-large-v1')),
+        'timeout' => (int) env('DENSE_EMBEDDING_TIMEOUT', env('OPENAI_TIMEOUT', 60)),
+    ],
+
+    'sparse_embedding' => [
+        'api_key' => env('SPARSE_EMBEDDING_API_KEY', ''),
+        'base_url' => env('SPARSE_EMBEDDING_BASE_URL', ''),
+        'model' => env('SPARSE_EMBEDDING_MODEL', ''),
+        'timeout' => (int) env('SPARSE_EMBEDDING_TIMEOUT', 60),
+    ],
+
+    'late_interaction' => [
+        'api_key' => env('LATE_INTERACTION_API_KEY', ''),
+        'base_url' => env('LATE_INTERACTION_BASE_URL', ''),
+        'model' => env('LATE_INTERACTION_MODEL', ''),
+        'timeout' => (int) env('LATE_INTERACTION_TIMEOUT', 60),
+    ],
+
     'qdrant' => [
         'url' => env('QDRANT_URL', 'http://localhost:6333'),
         'collection' => env('QDRANT_COLLECTION', 'catalog'),
         'timeout' => (int) env('QDRANT_TIMEOUT', 60),
         'vector_size' => (int) env('QDRANT_VECTOR_SIZE', 1024),
+        'dense_vector_size' => (int) env('QDRANT_DENSE_VECTOR_SIZE', env('QDRANT_VECTOR_SIZE', 1024)),
+        'late_vector_size' => env('QDRANT_LATE_VECTOR_SIZE'),
+        'dense_vector_name' => env('QDRANT_DENSE_VECTOR_NAME', 'dense'),
+        'sparse_vector_name' => env('QDRANT_SPARSE_VECTOR_NAME', 'sparse'),
+        'late_vector_name' => env('QDRANT_LATE_VECTOR_NAME', 'late'),
+        'sparse_modifier' => env('QDRANT_SPARSE_MODIFIER', 'idf'),
     ],
 
     'bigcommerce' => [

@@ -4,6 +4,11 @@ declare(strict_types=1);
 
 namespace App\Services\CatalogAgent;
 
+use App\Services\Catalog\CatalogEmbeddingService;
+use App\Services\Catalog\CatalogLateInteractionEmbeddingService;
+use App\Services\Catalog\CatalogSparseEmbeddingService;
+use App\Services\Catalog\CatalogVectorEncodingOrchestrator;
+use App\Services\Catalog\QdrantCatalogCollectionService;
 use GuzzleHttp\Client as GuzzleClient;
 use Illuminate\Contracts\Session\Session;
 use OpenAI\Client as OpenAIClient;
@@ -14,6 +19,7 @@ use Qdrant\Models\FieldCondition;
 use Qdrant\Models\Filter;
 use Qdrant\Models\NearestQuery;
 use Qdrant\Models\PointStruct;
+use Qdrant\Models\Prefetch;
 use Qdrant\Models\RecommendInput;
 use Qdrant\Models\RecommendQuery;
 use Qdrant\Models\Record;
@@ -74,11 +80,26 @@ PROMPT;
 
     private readonly OpenAIClient $openai;
 
+    private readonly CatalogVectorEncodingOrchestrator $vectorEncodings;
+
+    private readonly QdrantCatalogCollectionService $collectionService;
+
     private readonly QdrantClient $qdrant;
 
-    public function __construct(?CatalogAgentConfig $config = null)
-    {
+    public function __construct(
+        ?CatalogAgentConfig $config = null,
+        ?CatalogVectorEncodingOrchestrator $vectorEncodings = null,
+        ?QdrantCatalogCollectionService $collectionService = null,
+        ?QdrantClient $qdrant = null,
+    ) {
         $this->config = $config ?? CatalogAgentConfig::fromConfig();
+        $this->vectorEncodings = $vectorEncodings ?? new CatalogVectorEncodingOrchestrator(
+            CatalogEmbeddingService::fromConfig(),
+            CatalogSparseEmbeddingService::fromConfig(),
+            CatalogLateInteractionEmbeddingService::fromConfig(),
+            $this->config->hybridEnabled,
+        );
+        $this->collectionService = $collectionService ?? QdrantCatalogCollectionService::fromConfig();
         $this->openai = \OpenAI::factory()
             ->withApiKey($this->config->openaiApiKey)
             ->withBaseUri($this->config->openaiBaseUrl)
@@ -88,10 +109,7 @@ PROMPT;
             ]))
             ->make();
 
-        $this->qdrant = new QdrantClient(
-            url: $this->config->qdrantUrl,
-            timeout: $this->config->qdrantTimeout,
-        );
+        $this->qdrant = $qdrant ?? $this->collectionService->makeClient();
     }
 
     public function runtimeError(): ?string
@@ -247,6 +265,17 @@ PROMPT;
                     $this->config->qdrantUrl,
                 ),
             );
+        }
+
+        if (! $this->config->hybridEnabled) {
+            return;
+        }
+
+        try {
+            $this->vectorEncodings->assertHybridEncodersConfigured();
+            $this->collectionService->assertHybridCollectionSchema();
+        } catch (Throwable $exception) {
+            throw new AgentRuntimeException($exception->getMessage(), previous: $exception);
         }
     }
 
@@ -653,7 +682,7 @@ PROMPT;
      * @param  array<string, mixed>  $arguments
      * @return array<string, mixed>
      */
-    private function nearestQuery(array $arguments, ChatSessionState $state): array
+    protected function nearestQuery(array $arguments, ChatSessionState $state): array
     {
         $queryText = trim((string) ($arguments['query_text'] ?? ''));
         $limit = $this->coerceLimit($arguments['limit'] ?? null, $this->config->chatTopK);
@@ -663,13 +692,40 @@ PROMPT;
         }
 
         try {
-            $embedding = $this->getEmbeddings(self::SEARCH_PREFIX.$queryText);
-            $response = $this->qdrant->queryPoints(
-                collectionName: $this->config->qdrantCollection,
-                query: new NearestQuery($embedding),
-                withPayload: true,
-                limit: $this->expandedResultLimit($limit),
-            );
+            if ($this->config->hybridEnabled) {
+                $queryVectors = $this->vectorEncodings->encodeSearchQuery(
+                    queryText: $queryText,
+                    denseQueryText: self::SEARCH_PREFIX.$queryText,
+                );
+
+                $response = $this->qdrant->queryPoints(
+                    collectionName: $this->config->qdrantCollection,
+                    query: $queryVectors['late'] ?? [],
+                    using: $this->collectionService->lateVectorName(),
+                    withPayload: true,
+                    limit: $this->expandedResultLimit($limit),
+                    prefetch: [
+                        new Prefetch(
+                            query: $queryVectors['dense'] ?? [],
+                            using: $this->collectionService->denseVectorName(),
+                            limit: $this->config->hybridPrefetchLimit,
+                        ),
+                        new Prefetch(
+                            query: $queryVectors['sparse'] ?? null,
+                            using: $this->collectionService->sparseVectorName(),
+                            limit: $this->config->hybridPrefetchLimit,
+                        ),
+                    ],
+                );
+            } else {
+                $embedding = $this->vectorEncodings->encodeSearchQuery(self::SEARCH_PREFIX.$queryText);
+                $response = $this->qdrant->queryPoints(
+                    collectionName: $this->config->qdrantCollection,
+                    query: new NearestQuery($embedding['dense'] ?? []),
+                    withPayload: true,
+                    limit: $this->expandedResultLimit($limit),
+                );
+            }
         } catch (Throwable $exception) {
             return ['error' => sprintf('Nearest search failed: %s', $exception->getMessage())];
         }
@@ -690,7 +746,7 @@ PROMPT;
      * @param  array<string, mixed>  $arguments
      * @return array<string, mixed>
      */
-    private function recommendQuery(array $arguments, ChatSessionState $state): array
+    protected function recommendQuery(array $arguments, ChatSessionState $state): array
     {
         $limit = $this->coerceLimit($arguments['limit'] ?? null, $this->config->chatTopK);
         [$seedResultIndexes, $indexErrors] = $this->coerceIntList($arguments['seed_result_indexes'] ?? null);
@@ -1125,43 +1181,5 @@ PROMPT;
                 $message->toolCalls,
             ),
         ];
-    }
-
-    /**
-     * @return list<float>|list<list<float>>
-     */
-    private function getEmbeddings(string|array $texts): array
-    {
-        if (is_array($texts) && $texts === []) {
-            return [];
-        }
-
-        try {
-            $response = $this->openai->embeddings()->create([
-                'model' => $this->config->embeddingModel,
-                'input' => $texts,
-            ]);
-        } catch (Throwable $exception) {
-            throw new AgentRuntimeException(
-                sprintf(
-                    "Unable to create embeddings via %s with model '%s': %s",
-                    $this->config->openaiBaseUrl,
-                    $this->config->embeddingModel,
-                    $exception->getMessage(),
-                ),
-                previous: $exception,
-            );
-        }
-
-        $embeddings = array_map(
-            static fn ($embedding): array => $embedding->embedding,
-            $response->embeddings,
-        );
-
-        if (is_string($texts)) {
-            return $embeddings[0] ?? [];
-        }
-
-        return $embeddings;
     }
 }

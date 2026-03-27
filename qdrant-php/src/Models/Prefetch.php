@@ -7,24 +7,18 @@ namespace Qdrant\Models;
 use Qdrant\Support\Arrayable;
 use Qdrant\Support\Normalizer;
 
-final class QueryRequest implements Arrayable
+final class Prefetch implements Arrayable
 {
     /**
-     * @param  bool|list<string>|null  $withPayload
-     * @param  bool|list<string>|null  $withVector
-     * @param  int|string|list<int|string>|null  $shardKey
      * @param  Prefetch|list<Prefetch>|null  $prefetch
      */
     public function __construct(
         public readonly mixed $query = null,
         public readonly ?string $using = null,
         public readonly ?Filter $filter = null,
-        public readonly ?int $limit = 10,
+        public readonly ?int $limit = null,
         public readonly ?int $offset = null,
-        public readonly bool|array|null $withPayload = true,
-        public readonly bool|array|null $withVector = false,
         public readonly ?float $scoreThreshold = null,
-        public readonly int|string|array|null $shardKey = null,
         public readonly Prefetch|array|null $prefetch = null
     ) {}
 
@@ -34,12 +28,9 @@ final class QueryRequest implements Arrayable
             query: self::hydrateQuery($data['query'] ?? null),
             using: isset($data['using']) ? (string) $data['using'] : null,
             filter: isset($data['filter']) && is_array($data['filter']) ? Filter::fromArray($data['filter']) : null,
-            limit: isset($data['limit']) ? (int) $data['limit'] : 10,
+            limit: isset($data['limit']) ? (int) $data['limit'] : null,
             offset: isset($data['offset']) ? (int) $data['offset'] : null,
-            withPayload: $data['with_payload'] ?? true,
-            withVector: $data['with_vector'] ?? false,
             scoreThreshold: isset($data['score_threshold']) ? (float) $data['score_threshold'] : null,
-            shardKey: $data['shard_key'] ?? null,
             prefetch: self::hydratePrefetch($data['prefetch'] ?? null),
         );
     }
@@ -52,10 +43,7 @@ final class QueryRequest implements Arrayable
             'filter' => $this->filter,
             'limit' => $this->limit,
             'offset' => $this->offset,
-            'with_payload' => $this->withPayload,
-            'with_vector' => $this->withVector,
             'score_threshold' => $this->scoreThreshold,
-            'shard_key' => $this->shardKey,
             'prefetch' => $this->prefetch,
         ]);
     }

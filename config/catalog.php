@@ -13,4 +13,9 @@ return [
     'agent' => [
         'chat_top_k' => (int) env('CHAT_TOP_K', 10),
     ],
+
+    'search' => [
+        'hybrid_enabled' => filter_var(env('CATALOG_SEARCH_HYBRID_ENABLED', false), FILTER_VALIDATE_BOOL),
+        'hybrid_prefetch_limit' => (int) env('CATALOG_SEARCH_HYBRID_PREFETCH_LIMIT', 20),
+    ],
 ];

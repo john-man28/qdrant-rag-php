@@ -10,21 +10,23 @@ use Qdrant\Support\Normalizer;
 final class CreateCollectionRequest implements Arrayable
 {
     /**
-     * @param VectorParams|array<string, VectorParams>|null $vectors
+     * @param  VectorParams|array<string, VectorParams>|null  $vectors
+     * @param  array<string, SparseVectorParams>|null  $sparseVectors
      */
     public function __construct(
         public readonly VectorParams|array|null $vectors,
+        public readonly ?array $sparseVectors = null,
         public readonly ?int $shardNumber = null,
         public readonly ?int $replicationFactor = null,
         public readonly ?int $writeConsistencyFactor = null,
         public readonly ?bool $onDiskPayload = null,
         public readonly ?array $metadata = null
-    ) {
-    }
+    ) {}
 
     public static function fromArray(array $data): static
     {
         $vectors = $data['vectors'] ?? null;
+        $sparseVectors = $data['sparse_vectors'] ?? null;
 
         if ($vectors instanceof VectorParams) {
             $normalizedVectors = $vectors;
@@ -45,8 +47,22 @@ final class CreateCollectionRequest implements Arrayable
             $normalizedVectors = null;
         }
 
+        $normalizedSparseVectors = null;
+        if (is_array($sparseVectors)) {
+            $normalizedSparseVectors = [];
+
+            foreach ($sparseVectors as $name => $params) {
+                if ($params instanceof SparseVectorParams) {
+                    $normalizedSparseVectors[$name] = $params;
+                } elseif (is_array($params)) {
+                    $normalizedSparseVectors[$name] = SparseVectorParams::fromArray($params);
+                }
+            }
+        }
+
         return new self(
             vectors: $normalizedVectors,
+            sparseVectors: $normalizedSparseVectors,
             shardNumber: isset($data['shard_number']) ? (int) $data['shard_number'] : null,
             replicationFactor: isset($data['replication_factor']) ? (int) $data['replication_factor'] : null,
             writeConsistencyFactor: isset($data['write_consistency_factor']) ? (int) $data['write_consistency_factor'] : null,
@@ -59,6 +75,7 @@ final class CreateCollectionRequest implements Arrayable
     {
         return Normalizer::normalize([
             'vectors' => $this->vectors,
+            'sparse_vectors' => $this->sparseVectors,
             'shard_number' => $this->shardNumber,
             'replication_factor' => $this->replicationFactor,
             'write_consistency_factor' => $this->writeConsistencyFactor,

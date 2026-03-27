@@ -14,13 +14,15 @@ use Qdrant\Exceptions\TransportException;
 use Qdrant\Models\CreateCollectionRequest;
 use Qdrant\Models\Filter;
 use Qdrant\Models\PointRequest;
-use Qdrant\Models\PointStruct;
 use Qdrant\Models\PointsList;
+use Qdrant\Models\PointStruct;
+use Qdrant\Models\Prefetch;
 use Qdrant\Models\QueryRequest;
 use Qdrant\Models\QueryResponse;
 use Qdrant\Models\Record;
 use Qdrant\Models\ScrollRequest;
 use Qdrant\Models\ScrollResponse;
+use Qdrant\Models\SparseVectorParams;
 use Qdrant\Models\UpdateMode;
 use Qdrant\Models\UpdateResult;
 use Qdrant\Models\VectorParams;
@@ -30,8 +32,11 @@ use Qdrant\Transport\Rest\ApiClient;
 final class QdrantClient
 {
     private readonly ApiClient $apiClient;
+
     private readonly CollectionsApi $collectionsApi;
+
     private readonly PointsApi $pointsApi;
+
     private readonly SearchApi $searchApi;
 
     public function __construct(
@@ -91,7 +96,8 @@ final class QdrantClient
     }
 
     /**
-     * @param VectorParams|array<string, VectorParams> $vectorsConfig
+     * @param  VectorParams|array<string, VectorParams>  $vectorsConfig
+     * @param  array<string, SparseVectorParams>|null  $sparseVectorsConfig
      */
     public function createCollection(
         string $collectionName,
@@ -101,12 +107,14 @@ final class QdrantClient
         ?int $writeConsistencyFactor = null,
         ?bool $onDiskPayload = null,
         ?int $timeout = null,
-        ?array $metadata = null
+        ?array $metadata = null,
+        ?array $sparseVectorsConfig = null
     ): bool {
         return $this->collectionsApi->createCollection(
             $collectionName,
             new CreateCollectionRequest(
                 vectors: $vectorsConfig,
+                sparseVectors: $sparseVectorsConfig,
                 shardNumber: $shardNumber,
                 replicationFactor: $replicationFactor,
                 writeConsistencyFactor: $writeConsistencyFactor,
@@ -118,7 +126,7 @@ final class QdrantClient
     }
 
     /**
-     * @param iterable<PointStruct|array{id:int|string,vector:array,payload?:array|null}> $points
+     * @param  iterable<PointStruct|array{id:int|string,vector:array,payload?:array|null}>  $points
      */
     public function upsert(
         string $collectionName,
@@ -145,7 +153,7 @@ final class QdrantClient
     }
 
     /**
-     * @param iterable<PointStruct|array{id:int|string,vector:array,payload?:array|null}> $points
+     * @param  iterable<PointStruct|array{id:int|string,vector:array,payload?:array|null}>  $points
      */
     public function uploadPoints(
         string $collectionName,
@@ -214,7 +222,8 @@ final class QdrantClient
         ?float $scoreThreshold = null,
         int|string|null $consistency = null,
         int|string|array|null $shardKeySelector = null,
-        ?int $timeout = null
+        ?int $timeout = null,
+        Prefetch|array|null $prefetch = null
     ): QueryResponse {
         return $this->searchApi->queryPoints(
             $collectionName,
@@ -227,7 +236,8 @@ final class QdrantClient
                 withPayload: $withPayload,
                 withVector: $withVectors,
                 scoreThreshold: $scoreThreshold,
-                shardKey: $shardKeySelector
+                shardKey: $shardKeySelector,
+                prefetch: $prefetch
             ),
             $consistency,
             $timeout
@@ -235,7 +245,7 @@ final class QdrantClient
     }
 
     /**
-     * @param list<int|string> $ids
+     * @param  list<int|string>  $ids
      * @return list<Record>
      */
     public function retrieve(
@@ -310,6 +320,7 @@ final class QdrantClient
                     $updateFilter,
                     $updateMode
                 );
+
                 return;
             } catch (RateLimitException $exception) {
                 $attempt++;
@@ -332,7 +343,7 @@ final class QdrantClient
     }
 
     /**
-     * @param iterable<PointStruct|array{id:int|string,vector:array,payload?:array|null}> $points
+     * @param  iterable<PointStruct|array{id:int|string,vector:array,payload?:array|null}>  $points
      * @return list<PointStruct>
      */
     private function coercePoints(iterable $points): array
@@ -368,6 +379,6 @@ final class QdrantClient
             return $resolved;
         }
 
-        return $resolved . '/' . $trimmedPrefix;
+        return $resolved.'/'.$trimmedPrefix;
     }
 }

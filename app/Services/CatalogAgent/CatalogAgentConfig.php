@@ -16,6 +16,8 @@ final readonly class CatalogAgentConfig
         public string $qdrantCollection,
         public int $qdrantTimeout,
         public int $chatTopK,
+        public bool $hybridEnabled,
+        public int $hybridPrefetchLimit,
     ) {}
 
     public static function fromConfig(): self
@@ -30,6 +32,8 @@ final readonly class CatalogAgentConfig
             qdrantCollection: (string) config('services.qdrant.collection', 'catalog'),
             qdrantTimeout: (int) config('services.qdrant.timeout', 60),
             chatTopK: (int) config('catalog.agent.chat_top_k', 10),
+            hybridEnabled: (bool) config('catalog.search.hybrid_enabled', false),
+            hybridPrefetchLimit: max(1, (int) config('catalog.search.hybrid_prefetch_limit', 20)),
         );
     }
 }

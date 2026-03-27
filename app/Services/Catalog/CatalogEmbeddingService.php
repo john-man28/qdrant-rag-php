@@ -9,7 +9,7 @@ use OpenAI\Client as OpenAIClient;
 use RuntimeException;
 use Throwable;
 
-final class CatalogEmbeddingService
+final class CatalogEmbeddingService implements CatalogDenseEncoder
 {
     private readonly OpenAIClient $openai;
 
@@ -28,18 +28,23 @@ final class CatalogEmbeddingService
 
     public static function fromConfig(?GuzzleClient $guzzle = null): self
     {
-        $t = (int) config('services.openai.timeout', 60);
+        $t = (int) config('services.dense_embedding.timeout', config('services.openai.timeout', 60));
         $client = $guzzle ?? new GuzzleClient([
             'timeout' => $t,
             'connect_timeout' => $t,
         ]);
 
         return new self(
-            baseUrl: (string) config('services.openai.base_url', 'http://localhost:1234/v1'),
-            apiKey: (string) config('services.openai.api_key', 'lm-studio'),
-            embeddingModel: (string) config('services.openai.embedding_model', 'text-embedding-mxbai-embed-large-v1'),
+            baseUrl: (string) config('services.dense_embedding.base_url', config('services.openai.base_url', 'http://localhost:1234/v1')),
+            apiKey: (string) config('services.dense_embedding.api_key', config('services.openai.api_key', 'lm-studio')),
+            embeddingModel: (string) config('services.dense_embedding.model', config('services.openai.embedding_model', 'text-embedding-mxbai-embed-large-v1')),
             httpClient: $client,
         );
+    }
+
+    public function configured(): bool
+    {
+        return true;
     }
 
     /**
